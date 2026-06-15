@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cấu hình môi trường ảo Python
+.venv/
+venv/
+ENV/
+env/
+
+# Thư mục lưu truyện tải về
+truyen_tai_ve/
+test_output/
+
+# File cấu hình cá nhân hoặc tạm thời (nếu có)
+.env
+.env.*
+.vscode/
+.idea/
