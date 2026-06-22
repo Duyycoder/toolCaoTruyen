@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tool Cào Truyện Chữ</title>
+    <title>Tool Cào & Dịch Truyện Chữ</title>
     <!-- Google Fonts: Outfit (headings) & Inter (body) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -97,6 +97,38 @@
             font-weight: 500;
         }
 
+        /* --- TAB NAVIGATION --- */
+        .tab-navigation {
+            display: flex;
+            gap: 1rem;
+            padding: 0.5rem 2rem;
+            background-color: var(--bg-surface);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            padding: 0.75rem 1.25rem;
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all var(--transition-fast);
+            outline: none;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-primary);
+        }
+
+        .tab-btn.active {
+            color: var(--border-focus);
+            border-bottom-color: var(--border-focus);
+        }
+
         /* --- MAIN LAYOUT --- */
         main {
             flex: 1;
@@ -152,6 +184,7 @@
 
         input[type="text"],
         input[type="number"],
+        input[type="password"],
         select {
             background-color: var(--bg-input);
             border: 1px solid var(--border-color);
@@ -190,6 +223,18 @@
 
         .directory-flex input {
             flex: 1;
+        }
+
+        .helper-text {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: -0.25rem;
+        }
+
+        .status-badge {
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-top: 0.25rem;
         }
 
         /* --- BUTTONS --- */
@@ -372,17 +417,24 @@
         <div class="logo-container">
             <div class="logo-icon">📖</div>
             <div>
-                <h1>Novel Downloader</h1>
-                <p style="font-size: 0.75rem; color: var(--text-muted);">Hệ thống cào truyện bypass Cloudflare</p>
+                <h1>Novel Downloader & Translator</h1>
+                <p style="font-size: 0.75rem; color: var(--text-muted);">Hệ thống cào và dịch truyện chữ đa engine</p>
             </div>
-            <span class="version-badge">v2.0 Refactored</span>
+            <span class="version-badge">v3.0 Final</span>
         </div>
         <div style="font-size: 0.85rem; color: var(--text-secondary);">
             Local Host Server
         </div>
     </header>
 
-    <main>
+    <!-- Tab Navigation -->
+    <div class="tab-navigation">
+        <button class="tab-btn active" id="tab-btn-crawl">Cào Truyện Web</button>
+        <button class="tab-btn" id="tab-btn-translate">Dịch Truyện Offline</button>
+    </div>
+
+    <!-- TAB 1: CÀO TRUYỆN WEB -->
+    <main id="tab-crawl-content">
         <!-- Cấu hình (Left Card) -->
         <div class="card">
             <div>
@@ -460,20 +512,153 @@
                         <div class="console-dot dot-yellow"></div>
                         <div class="console-dot dot-green"></div>
                     </div>
-                    <div>Terminal Console Logs</div>
+                    <div>Terminal Console Logs (Tải Truyện)</div>
                     <div style="cursor: pointer;" id="btn-clear-console">Clear</div>
                 </div>
                 <div class="console-body" id="console-body">
-                    <div class="log-dim">// Web UI skeleton đã sẵn sàng.</div>
-                    <div class="log-dim">// Nhấp "Bắt Đầu Tải Truyện" để chạy mô phỏng tiến độ.</div>
+                    <div class="log-dim">// Hệ thống cào truyện đã sẵn sàng.</div>
                     <div class="log-info">[i] Server lắng nghe tại địa chỉ http://localhost:8000</div>
                 </div>
             </div>
         </div>
     </main>
 
+    <!-- TAB 2: DỊCH TRUYỆN OFFLINE -->
+    <main id="tab-translate-content" style="display: none;">
+        <!-- Cấu hình (Left Card) -->
+        <div class="card">
+            <div>
+                <h2 class="card-title">Cấu Hình Dịch Thuật</h2>
+                <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
+                    Dịch các file Markdown (.md) đã tải sang Tiếng Việt.
+                </p>
+            </div>
+
+            <!-- Chọn đối tượng dịch -->
+            <div class="form-group">
+                <label>Đối tượng cần dịch</label>
+                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                    <div class="directory-flex">
+                        <input type="text" id="input-trans-files" readonly placeholder="Chưa chọn file .md nào...">
+                        <button type="button" class="btn btn-secondary" id="btn-browse-files">Chọn File...</button>
+                    </div>
+                    <div class="directory-flex">
+                        <input type="text" id="input-trans-folder" readonly placeholder="Hoặc chọn thư mục chứa các file .md...">
+                        <button type="button" class="btn btn-secondary" id="btn-browse-folder">Chọn Thư Mục...</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Ngôn ngữ nguồn -->
+            <div class="form-group">
+                <label for="select-source-lang">Ngôn ngữ gốc (Source Language)</label>
+                <select id="select-source-lang">
+                    <option value="zh" selected>Tiếng Trung</option>
+                </select>
+            </div>
+
+            <!-- Chọn Engine dịch thuật -->
+            <div class="form-group">
+                <label for="select-trans-engine">Engine dịch thuật</label>
+                <select id="select-trans-engine">
+                    <option value="ollama" selected>Ollama (Chạy Offline Local)</option>
+                    <option value="gemini">Gemini API (Cần API Key + Kết nối mạng)</option>
+                </select>
+            </div>
+
+            <!-- Cấu hình Ollama Model -->
+            <div id="block-ollama-config" style="display: flex; flex-direction: column; gap: 1rem;">
+                <div class="form-group">
+                    <label for="select-ollama-model">Ollama Model</label>
+                    <select id="select-ollama-model">
+                        <!-- Sẽ load từ API -->
+                    </select>
+                    <div id="ollama-model-status" class="status-badge">Đang kiểm tra model...</div>
+                </div>
+            </div>
+
+            <!-- Cấu hình Gemini API -->
+            <div id="block-gemini-config" style="display: none; flex-direction: column; gap: 1rem;">
+                <div class="form-group">
+                    <label for="input-gemini-key">Gemini API Key</label>
+                    <input type="password" id="input-gemini-key" placeholder="Nhập API Key của Gemini...">
+                    <p class="helper-text">API Key sẽ được lưu trữ cục bộ trong config.json</p>
+                </div>
+                <div class="form-group">
+                    <label for="input-gemini-model">Gemini Model</label>
+                    <input type="text" id="input-gemini-model" value="gemini-2.5-flash">
+                </div>
+            </div>
+
+            <!-- Ngưỡng phát hiện rò rỉ chữ Trung -->
+            <div class="form-group">
+                <label for="input-leak-threshold">Ngưỡng rò rỉ chữ Trung chấp nhận (%)</label>
+                <input type="number" id="input-leak-threshold" value="10" min="1" max="100">
+                <p class="helper-text">Nếu bản dịch chunk chứa tỷ lệ chữ Hán vượt quá mức này, AI sẽ kích hoạt chế độ dịch lại và vá lỗi tự động.</p>
+            </div>
+
+            <!-- Nút bắt đầu dịch -->
+            <button type="button" class="btn btn-primary btn-action-large" id="btn-start-translate">
+                <span>▶</span> Bắt Đầu Dịch Thuật
+            </button>
+        </div>
+
+        <!-- Trạng thái & Logs dịch (Right Column) -->
+        <div class="right-column">
+            <!-- Tiến độ dịch -->
+            <div class="progress-card">
+                <div class="progress-stats">
+                    <span>Tiến độ dịch: <span class="status-text" id="trans-progress-percent">0%</span></span>
+                    <span id="trans-progress-status">Chưa bắt đầu dịch</span>
+                </div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" id="trans-progress-bar-fill"></div>
+                </div>
+            </div>
+
+            <!-- Console log dịch -->
+            <div class="console-container">
+                <div class="console-header">
+                    <div class="console-dots">
+                        <div class="console-dot dot-red"></div>
+                        <div class="console-dot dot-yellow"></div>
+                        <div class="console-dot dot-green"></div>
+                    </div>
+                    <div>Terminal Console Logs (Dịch Thuật)</div>
+                    <div style="cursor: pointer;" id="btn-clear-trans-console">Clear</div>
+                </div>
+                <div class="console-body" id="trans-console-body">
+                    <div class="log-dim">// Hệ thống dịch thuật offline đã sẵn sàng.</div>
+                    <div class="log-dim">// Model được chốt cấu hình chunk_size tối ưu dựa trên dữ liệu đo leak thực tế.</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
     <script>
-        // Các elements
+        // --- CHUYỂN TABS ---
+        const tabBtnCrawl = document.getElementById("tab-btn-crawl");
+        const tabBtnTranslate = document.getElementById("tab-btn-translate");
+        const tabCrawlContent = document.getElementById("tab-crawl-content");
+        const tabTranslateContent = document.getElementById("tab-translate-content");
+
+        tabBtnCrawl.addEventListener("click", () => {
+            tabBtnCrawl.classList.add("active");
+            tabBtnTranslate.classList.remove("active");
+            tabCrawlContent.style.display = "grid";
+            tabTranslateContent.style.display = "none";
+        });
+
+        tabBtnTranslate.addEventListener("click", () => {
+            tabBtnTranslate.classList.add("active");
+            tabBtnCrawl.classList.remove("active");
+            tabTranslateContent.style.display = "grid";
+            tabCrawlContent.style.display = "none";
+        });
+
+        // ==========================================
+        // JS TAB 1: CÀO TRUYỆN WEB
+        // ==========================================
         const selectSource = document.getElementById("select-source");
         const inputBaseUrl = document.getElementById("input-base-url");
         const inputStoryId = document.getElementById("input-story-id");
@@ -488,19 +673,17 @@
         const progressPercentTxt = document.getElementById("progress-percent-txt");
         const progressChaptersTxt = document.getElementById("progress-chapters-txt");
 
-        // Ghi log vào console UI
         function logToConsole(message, type = "info", bold = false) {
             const div = document.createElement("div");
             div.className = `log-${type} ${bold ? 'log-bold' : ''}`;
             div.textContent = message;
             consoleBody.appendChild(div);
-            consoleBody.scrollTop = consoleBody.scrollHeight; // Auto scroll
+            consoleBody.scrollTop = consoleBody.scrollHeight;
         }
 
-        // Tải config từ server khi load trang
         async function fetchConfig() {
             try {
-                // 1. Lấy danh sách sources
+                // Lấy danh sách sources
                 const resSources = await fetch("/api/sources");
                 const dataSources = await resSources.json();
                 selectSource.innerHTML = "";
@@ -511,7 +694,7 @@
                     selectSource.appendChild(opt);
                 });
 
-                // 2. Lấy config hiện tại
+                // Lấy config hiện tại
                 const resConfig = await fetch("/api/config");
                 const config = await resConfig.json();
                 
@@ -520,12 +703,22 @@
                 selectSource.value = config.source || "69shuba";
                 
                 logToConsole("[✓] Đã tải cấu hình lưu trữ gần nhất.");
+
+                // Đồng bộ sang Tab Dịch thuật
+                if (config.translator) {
+                    selectTransEngine.value = config.translator.engine || "ollama";
+                    inputGeminiKey.value = config.translator.gemini_api_key || "";
+                    inputGeminiModel.value = config.translator.gemini_model || "gemini-2.5-flash";
+                    inputLeakThreshold.value = config.translator.leak_threshold_percent || 10;
+                    
+                    toggleEngineConfigBlocks(config.translator.engine);
+                    await loadOllamaModelsRegistry(config.translator.ollama_model);
+                }
             } catch (err) {
                 logToConsole(`[✗] Lỗi tải cấu hình: ${err.message}`, "danger");
             }
         }
 
-        // Gọi API mở dialog chọn folder native
         btnBrowseDir.addEventListener("click", async () => {
             logToConsole("[i] Đang mở hộp thoại chọn thư mục lưu trữ...", "dim");
             btnBrowseDir.disabled = true;
@@ -535,6 +728,8 @@
                 if (data.status === "success" && data.path) {
                     inputOutputDir.value = data.path;
                     logToConsole(`[✓] Đã đổi thư mục lưu sang: ${data.path}`, "success");
+                    // Tự động đồng bộ đường dẫn sang tab dịch nếu tiện
+                    inputTransFolder.value = data.path;
                 } else if (data.status === "cancelled") {
                     logToConsole("[i] Đã hủy chọn thư mục.", "dim");
                 } else if (data.status === "error") {
@@ -547,23 +742,19 @@
             }
         });
 
-        // Xóa console log
         btnClearConsole.addEventListener("click", () => {
             consoleBody.innerHTML = "";
             logToConsole("// Console cleared.", "dim");
         });
 
-        // Biến toàn cục quản lý kết nối WebSocket và luồng cào
-        let ws = null;
-        let isRunning = false;
+        let wsCrawl = null;
+        let isCrawlRunning = false;
 
-        // Cập nhật trạng thái nút bấm
-        function setRunningState(running) {
-            isRunning = running;
+        function setCrawlRunningState(running) {
+            isCrawlRunning = running;
             if (running) {
                 btnStartCrawl.innerHTML = "<span>⏹</span> Dừng Tải Truyện";
                 btnStartCrawl.style.backgroundColor = "var(--color-danger)";
-                // Disable các input cấu hình khi đang chạy
                 inputBaseUrl.disabled = true;
                 inputStoryId.disabled = true;
                 inputStartChapterId.disabled = true;
@@ -573,7 +764,6 @@
             } else {
                 btnStartCrawl.innerHTML = "<span>▶</span> Bắt Đầu Tải Truyện";
                 btnStartCrawl.style.backgroundColor = "var(--color-primary)";
-                // Enable lại các input khi kết thúc
                 inputBaseUrl.disabled = false;
                 inputStoryId.disabled = false;
                 inputStartChapterId.disabled = false;
@@ -583,74 +773,15 @@
             }
         }
 
-        // Tải config từ server khi load trang
-        async function fetchConfig() {
-            try {
-                // 1. Lấy danh sách sources
-                const resSources = await fetch("/api/sources");
-                const dataSources = await resSources.json();
-                selectSource.innerHTML = "";
-                dataSources.sources.forEach(src => {
-                    const opt = document.createElement("option");
-                    opt.value = src;
-                    opt.textContent = src;
-                    selectSource.appendChild(opt);
-                });
-
-                // 2. Lấy config hiện tại
-                const resConfig = await fetch("/api/config");
-                const config = await resConfig.json();
-                
-                inputBaseUrl.value = config.base_url || "https://www.69shuba.com/txt";
-                inputOutputDir.value = config.output_dir || "./truyen_tai_ve";
-                selectSource.value = config.source || "69shuba";
-                
-                logToConsole("[✓] Đã tải cấu hình lưu trữ gần nhất.");
-            } catch (err) {
-                logToConsole(`[✗] Lỗi tải cấu hình: ${err.message}`, "danger");
-            }
-        }
-
-        // Gọi API mở dialog chọn folder native
-        btnBrowseDir.addEventListener("click", async () => {
-            logToConsole("[i] Đang mở hộp thoại chọn thư mục lưu trữ...", "dim");
-            btnBrowseDir.disabled = true;
-            try {
-                const res = await fetch("/api/select-directory");
-                const data = await res.json();
-                if (data.status === "success" && data.path) {
-                    inputOutputDir.value = data.path;
-                    logToConsole(`[✓] Đã đổi thư mục lưu sang: ${data.path}`, "success");
-                } else if (data.status === "cancelled") {
-                    logToConsole("[i] Đã hủy chọn thư mục.", "dim");
-                } else if (data.status === "error") {
-                    logToConsole(`[✗] Lỗi: ${data.message}`, "danger");
-                }
-            } catch (err) {
-                logToConsole(`[✗] Không thể kết nối server: ${err.message}`, "danger");
-            } finally {
-                btnBrowseDir.disabled = false;
-            }
-        });
-
-        // Xóa console log
-        btnClearConsole.addEventListener("click", () => {
-            consoleBody.innerHTML = "";
-            logToConsole("// Console cleared.", "dim");
-        });
-
-        // Sự kiện kích hoạt luồng tải truyện
         btnStartCrawl.addEventListener("click", async () => {
-            if (isRunning) {
-                // Người dùng muốn gửi lệnh dừng cào
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    logToConsole("[!] Đang gửi tín hiệu dừng tới hệ thống...", "warning");
-                    ws.send(JSON.stringify({ command: "stop" }));
+            if (isCrawlRunning) {
+                if (wsCrawl && wsCrawl.readyState === WebSocket.OPEN) {
+                    logToConsole("[!] Đang gửi tín hiệu dừng tới crawler...", "warning");
+                    wsCrawl.send(JSON.stringify({ command: "stop" }));
                 }
                 return;
             }
 
-            // Kiểm tra đầu vào cơ bản
             const storyId = inputStoryId.value.trim();
             const startId = inputStartChapterId.value.trim();
             const count = parseInt(inputNumChapters.value) || 50;
@@ -660,7 +791,6 @@
                 return;
             }
 
-            // Đồng bộ config mới lên server trước khi chạy
             try {
                 await fetch("/api/config", {
                     method: "POST",
@@ -675,18 +805,16 @@
                 logToConsole(`[⚠] Cảnh báo: Không thể lưu config: ${err.message}`, "warning");
             }
 
-            // Khởi tạo WebSocket kết nối cào truyện thật
             const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
             const wsUrl = `${protocol}//${window.location.host}/ws/crawl`;
             
             logToConsole("\n[i] Đang mở kết nối WebSocket tới máy chủ...", "dim");
-            ws = new WebSocket(wsUrl);
+            wsCrawl = new WebSocket(wsUrl);
 
-            ws.onopen = () => {
+            wsCrawl.onopen = () => {
                 logToConsole("[✓] Kết nối WebSocket thành công. Đang khởi tạo trình duyệt...", "success");
-                setRunningState(true);
+                setCrawlRunningState(true);
 
-                // Gửi gói tin cấu hình bắt đầu cào
                 const payload = {
                     base_url: inputBaseUrl.value.trim(),
                     story_id: storyId,
@@ -695,10 +823,10 @@
                     output_dir: inputOutputDir.value.trim(),
                     source: selectSource.value
                 };
-                ws.send(JSON.stringify(payload));
+                wsCrawl.send(JSON.stringify(payload));
             };
 
-            ws.onmessage = (event) => {
+            wsCrawl.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 const evType = data.event;
 
@@ -708,7 +836,6 @@
                     progressPercentTxt.textContent = "0%";
                     progressChaptersTxt.textContent = "Đang bắt đầu cào...";
                 } else if (evType === "before_download") {
-                    // Không xuống dòng, tạo cảm giác trôi chữ
                     logToConsole(`[→] Đang tải ID ${data.chapter_id}...`, "info");
                 } else if (evType === "story_name") {
                     logToConsole(`[i] Tên truyện: ${data.story_name}`, "bold");
@@ -717,8 +844,6 @@
                     progressBarFill.style.width = `${percent}%`;
                     progressPercentTxt.textContent = `${percent}%`;
                     progressChaptersTxt.textContent = `Tải thành công: ${data.successful_downloads}/${count} chương`;
-                    
-                    // In link chương lưu thành công
                     logToConsole(`[✓] Chương ${data.successful_downloads}/${count}: ${data.chapter_name}`, "success");
                 } else if (evType === "chapter_not_exist") {
                     logToConsole(`[⚠] Chương ID [${data.chapter_id}] không tồn tại. Đang thử ID tiếp theo... (${data.consecutive_failures}/${data.max_failures})`, "warning");
@@ -754,18 +879,353 @@
                 }
             };
 
-            ws.onerror = (err) => {
-                logToConsole(`[✗] Lỗi kết nối WebSocket.`, "danger");
-                setRunningState(false);
+            wsCrawl.onerror = () => {
+                logToConsole(`[✗] Lỗi kết nối WebSocket cào truyện.`, "danger");
+                setCrawlRunningState(false);
             };
 
-            ws.onclose = () => {
-                logToConsole("[i] Đã ngắt kết nối WebSocket tới máy chủ.", "dim");
-                setRunningState(false);
+            wsCrawl.onclose = () => {
+                logToConsole("[i] Đã ngắt kết nối WebSocket tới máy chủ cào.", "dim");
+                setCrawlRunningState(false);
             };
         });
 
-        // Tải config khi mở trang
+        // ==========================================
+        // JS TAB 2: DỊCH TRUYỆN OFFLINE
+        // ==========================================
+        const inputTransFiles = document.getElementById("input-trans-files");
+        const btnBrowseFiles = document.getElementById("btn-browse-files");
+        const inputTransFolder = document.getElementById("input-trans-folder");
+        const btnBrowseFolder = document.getElementById("btn-browse-folder");
+        
+        const selectSourceLang = document.getElementById("select-source-lang");
+        const selectTransEngine = document.getElementById("select-trans-engine");
+        
+        const blockOllamaConfig = document.getElementById("block-ollama-config");
+        const selectOllamaModel = document.getElementById("select-ollama-model");
+        const ollamaModelStatus = document.getElementById("ollama-model-status");
+        
+        const blockGeminiConfig = document.getElementById("block-gemini-config");
+        const inputGeminiKey = document.getElementById("input-gemini-key");
+        const inputGeminiModel = document.getElementById("input-gemini-model");
+        
+        const inputLeakThreshold = document.getElementById("input-leak-threshold");
+        const btnStartTranslate = document.getElementById("btn-start-translate");
+        
+        const transProgressPercent = document.getElementById("trans-progress-percent");
+        const transProgressStatus = document.getElementById("trans-progress-status");
+        const transProgressBarFill = document.getElementById("trans-progress-bar-fill");
+        
+        const transConsoleBody = document.getElementById("trans-console-body");
+        const btnClearTransConsole = document.getElementById("btn-clear-trans-console");
+
+        let selectedFilesList = [];
+        let selectedFolderPath = "";
+        let wsTranslate = null;
+        let isTranslateRunning = false;
+
+        function logToTransConsole(message, type = "info", bold = false) {
+            const div = document.createElement("div");
+            // Nhận diện một số header log từ API
+            if (message.startsWith("[->]")) {
+                type = "info";
+            } else if (message.startsWith("[✓]") || message.startsWith("[SUCCESS]")) {
+                type = "success";
+            } else if (message.startsWith("[WARN]")) {
+                type = "warning";
+            } else if (message.startsWith("[ERROR]") || message.startsWith("[✗]")) {
+                type = "danger";
+            } else if (message.startsWith("[INFO]")) {
+                type = "bold";
+            }
+            
+            div.className = `log-${type} ${bold ? 'log-bold' : ''}`;
+            div.textContent = message;
+            transConsoleBody.appendChild(div);
+            transConsoleBody.scrollTop = transConsoleBody.scrollHeight;
+        }
+
+        // Toggle UI blocks between engines
+        function toggleEngineConfigBlocks(engine) {
+            if (engine === "ollama") {
+                blockOllamaConfig.style.display = "flex";
+                blockGeminiConfig.style.display = "none";
+            } else {
+                blockOllamaConfig.style.display = "none";
+                blockGeminiConfig.style.display = "flex";
+            }
+        }
+
+        selectTransEngine.addEventListener("change", (e) => {
+            toggleEngineConfigBlocks(e.target.value);
+        });
+
+        // Load languages registry
+        async function loadLanguages() {
+            try {
+                const res = await fetch("/api/languages");
+                const data = await res.json();
+                selectSourceLang.innerHTML = "";
+                for (const [code, label] of Object.entries(data.languages)) {
+                    const opt = document.createElement("option");
+                    opt.value = code;
+                    opt.textContent = label;
+                    selectSourceLang.appendChild(opt);
+                }
+            } catch (err) {
+                console.error("Lỗi khi load ngôn ngữ: ", err);
+            }
+        }
+
+        // Load Ollama models registry
+        async function loadOllamaModelsRegistry(selectedModel = null) {
+            try {
+                const res = await fetch("/api/ollama/models");
+                const data = await res.json();
+                selectOllamaModel.innerHTML = "";
+                
+                for (const [modelName, info] of Object.entries(data.models)) {
+                    const opt = document.createElement("option");
+                    opt.value = modelName;
+                    opt.textContent = `${info.label} (${modelName})`;
+                    selectOllamaModel.appendChild(opt);
+                }
+                
+                if (selectedModel && data.models[selectedModel]) {
+                    selectOllamaModel.value = selectedModel;
+                }
+                
+                await checkOllamaModelAvailability(selectOllamaModel.value);
+            } catch (err) {
+                console.error("Lỗi khi load Ollama models: ", err);
+            }
+        }
+
+        // Check availability of chosen Ollama model
+        async function checkOllamaModelAvailability(modelName) {
+            if (!modelName) return;
+            ollamaModelStatus.textContent = "Đang kiểm tra trạng thái model...";
+            ollamaModelStatus.style.color = "var(--text-muted)";
+            
+            try {
+                const res = await fetch(`/api/ollama/check-model?model=${encodeURIComponent(modelName)}`);
+                const data = await res.json();
+                
+                if (data.available) {
+                    ollamaModelStatus.textContent = "✓ Model đã sẵn sàng để dịch";
+                    ollamaModelStatus.style.color = "var(--color-success)";
+                } else {
+                    ollamaModelStatus.textContent = `⚠ Model chưa được tải. Cần chạy: ollama pull ${modelName}`;
+                    ollamaModelStatus.style.color = "var(--color-warning)";
+                }
+            } catch (err) {
+                ollamaModelStatus.textContent = "✗ Không thể kết nối với Ollama Server";
+                ollamaModelStatus.style.color = "var(--color-danger)";
+            }
+        }
+
+        selectOllamaModel.addEventListener("change", (e) => {
+            checkOllamaModelAvailability(e.target.value);
+        });
+
+        // Browse files
+        btnBrowseFiles.addEventListener("click", async () => {
+            logToTransConsole("[i] Đang mở hộp thoại chọn file...", "dim");
+            btnBrowseFiles.disabled = true;
+            try {
+                const res = await fetch("/api/select-files");
+                const data = await res.json();
+                if (data.status === "success" && data.files.length > 0) {
+                    selectedFilesList = data.files;
+                    selectedFolderPath = "";
+                    inputTransFolder.value = "";
+                    
+                    inputTransFiles.value = `Đã chọn ${data.files.length} file .md`;
+                    logToTransConsole(`[✓] Đã chọn danh sách ${data.files.length} file cần dịch.`, "success");
+                    data.files.forEach(f => logToTransConsole(`  - File: ${f}`, "dim"));
+                } else if (data.status === "cancelled") {
+                    logToTransConsole("[i] Đã hủy chọn file.", "dim");
+                }
+            } catch (err) {
+                logToTransConsole(`[✗] Lỗi mở dialog file: ${err.message}`, "danger");
+            } finally {
+                btnBrowseFiles.disabled = false;
+            }
+        });
+
+        // Browse folder
+        btnBrowseFolder.addEventListener("click", async () => {
+            logToTransConsole("[i] Đang mở hộp thoại chọn thư mục...", "dim");
+            btnBrowseFolder.disabled = true;
+            try {
+                const res = await fetch("/api/select-directory");
+                const data = await res.json();
+                if (data.status === "success" && data.path) {
+                    selectedFolderPath = data.path;
+                    selectedFilesList = [];
+                    inputTransFiles.value = "";
+                    
+                    inputTransFolder.value = data.path;
+                    logToTransConsole(`[✓] Đã chọn thư mục dịch: ${data.path}`, "success");
+                    logToTransConsole("[i] Hệ thống sẽ tự động quét toàn bộ file .md trong thư mục này khi bắt đầu dịch.", "info");
+                } else if (data.status === "cancelled") {
+                    logToTransConsole("[i] Đã hủy chọn thư mục.", "dim");
+                }
+            } catch (err) {
+                logToTransConsole(`[✗] Lỗi mở dialog thư mục: ${err.message}`, "danger");
+            } finally {
+                btnBrowseFolder.disabled = false;
+            }
+        });
+
+        btnClearTransConsole.addEventListener("click", () => {
+            transConsoleBody.innerHTML = "";
+            logToTransConsole("// Console cleared.", "dim");
+        });
+
+        function setTranslateRunningState(running) {
+            isTranslateRunning = running;
+            if (running) {
+                btnStartTranslate.innerHTML = "<span>⏹</span> Dừng Dịch Thuật";
+                btnStartTranslate.style.backgroundColor = "var(--color-danger)";
+                btnBrowseFiles.disabled = true;
+                btnBrowseFolder.disabled = true;
+                selectSourceLang.disabled = true;
+                selectTransEngine.disabled = true;
+                selectOllamaModel.disabled = true;
+                inputGeminiKey.disabled = true;
+                inputGeminiModel.disabled = true;
+                inputLeakThreshold.disabled = true;
+            } else {
+                btnStartTranslate.innerHTML = "<span>▶</span> Bắt Đầu Dịch Thuật";
+                btnStartTranslate.style.backgroundColor = "var(--color-primary)";
+                btnBrowseFiles.disabled = false;
+                btnBrowseFolder.disabled = false;
+                selectSourceLang.disabled = false;
+                selectTransEngine.disabled = false;
+                selectOllamaModel.disabled = false;
+                inputGeminiKey.disabled = false;
+                inputGeminiModel.disabled = false;
+                inputLeakThreshold.disabled = false;
+            }
+        }
+
+        btnStartTranslate.addEventListener("click", async () => {
+            if (isTranslateRunning) {
+                if (wsTranslate && wsTranslate.readyState === WebSocket.OPEN) {
+                    logToTransConsole("[!] Đang gửi tín hiệu dừng tới hệ thống dịch...", "warning");
+                    wsTranslate.send(JSON.stringify({ command: "stop" }));
+                }
+                return;
+            }
+
+            if (selectedFilesList.length === 0 && !selectedFolderPath) {
+                alert("Vui lòng chọn File hoặc Thư mục chứa tài liệu .md cần dịch!");
+                return;
+            }
+
+            const engine = selectTransEngine.value;
+            const ollamaModel = selectOllamaModel.value;
+            const geminiKey = inputGeminiKey.value.trim();
+            const geminiModel = inputGeminiModel.value.trim();
+            const leakThreshold = parseInt(inputLeakThreshold.value) || 10;
+
+            if (engine === "gemini" && !geminiKey) {
+                alert("Vui lòng cấu hình Gemini API Key trước khi dịch!");
+                return;
+            }
+
+            // Đồng bộ config dịch lên server
+            try {
+                await fetch("/api/config/translator", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        engine: engine,
+                        ollama_model: ollamaModel,
+                        leak_threshold_percent: leakThreshold,
+                        gemini_api_key: geminiKey,
+                        gemini_model: geminiModel
+                    })
+                });
+            } catch (err) {
+                logToTransConsole(`[⚠] Cảnh báo: Không thể lưu config dịch: ${err.message}`, "warning");
+            }
+
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const wsUrl = `${protocol}//${window.location.host}/ws/translate`;
+            
+            logToTransConsole("\n[i] Khởi động luồng dịch qua WebSocket...", "dim");
+            wsTranslate = new WebSocket(wsUrl);
+
+            wsTranslate.onopen = () => {
+                logToTransConsole("[✓] Kết nối WebSocket dịch thuật thành công. Bắt đầu xử lý...", "success");
+                setTranslateRunningState(true);
+
+                // Gửi payload cấu hình dịch
+                const payload = {
+                    file_paths: selectedFilesList,
+                    folder_path: selectedFolderPath,
+                    engine: engine,
+                    ollama_model: ollamaModel,
+                    gemini_api_key: geminiKey,
+                    gemini_model: geminiModel,
+                    leak_threshold_percent: leakThreshold,
+                    source_lang: selectSourceLang.value
+                };
+                wsTranslate.send(JSON.stringify(payload));
+            };
+
+            wsTranslate.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                const evType = data.event;
+
+                if (evType === "start") {
+                    logToTransConsole(`\n[▶] ${data.message}`, "success", true);
+                    transProgressBarFill.style.width = "0%";
+                    transProgressPercent.textContent = "0%";
+                    transProgressStatus.textContent = "Bắt đầu dịch danh sách...";
+                } else if (evType === "log") {
+                    logToTransConsole(data.message);
+                } else if (evType === "file_start") {
+                    logToTransConsole(`\n${data.message}`, "bold");
+                    transProgressStatus.textContent = `Đang dịch file ${data.index}: ${data.file_name}`;
+                } else if (evType === "file_success") {
+                    logToTransConsole(data.message, "success");
+                } else if (evType === "file_error") {
+                    logToTransConsole(data.message, "danger");
+                } else if (evType === "stopped_request") {
+                    logToTransConsole(data.message, "warning");
+                } else if (evType === "stopped") {
+                    logToTransConsole(`\n[!] Dừng dịch thuật: ${data.message}`, "warning", true);
+                    transProgressStatus.textContent = "Đã dừng bởi người dùng.";
+                } else if (evType === "completed") {
+                    logToTransConsole(`\n════════════════════════════════════════════════════════════`, "success");
+                    logToTransConsole(`   🎉  HOÀN THÀNH DỊCH THUẬT:`, "bold");
+                    logToTransConsole(`   ${data.message}`, "success");
+                    logToTransConsole(`════════════════════════════════════════════════════════════\n`, "success");
+                    
+                    transProgressBarFill.style.width = "100%";
+                    transProgressPercent.textContent = "100%";
+                    transProgressStatus.textContent = "Đã hoàn thành!";
+                } else if (evType === "error") {
+                    logToTransConsole(data.message, "danger", true);
+                }
+            };
+
+            wsTranslate.onerror = () => {
+                logToTransConsole(`[✗] Lỗi kết nối WebSocket dịch thuật.`, "danger");
+                setTranslateRunningState(false);
+            };
+
+            wsTranslate.onclose = () => {
+                logToTransConsole("[i] Đã đóng kết nối WebSocket dịch thuật.", "dim");
+                setTranslateRunningState(false);
+            };
+        });
+
+        // Load configs
+        loadLanguages();
         fetchConfig();
     </script>
 </body>

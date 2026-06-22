@@ -135,7 +135,68 @@ if %errorlevel% neq 0 (
 echo [OK] Da ket noi voi Ollama server.
 echo.
 
-rem === 6. Tai Model qwen2.5:7b-instruct ===
+rem === 6. Lua chon Engine dich thuat & Cau hinh ===
+echo ============================================================
+echo    [OPTION] CHON ENGINE DICH THUAT MAC DINH
+echo ============================================================
+echo [1] Ollama (Dich Local Offline, can card do hoa NVIDIA >= 6GB VRAM)
+echo [2] Gemini API (Dich Online toc do cao, can Gemini API Key)
+echo [3] Su dung ca hai (Mac dinh)
+echo ------------------------------------------------------------
+set /p CHOICE="Nhap lua chon cua ban [1, 2, 3] (Mac dinh la 3): "
+
+if "%CHOICE%"=="" set CHOICE=3
+
+if "%CHOICE%"=="2" goto :setup_gemini_only
+if "%CHOICE%"=="3" goto :setup_both
+goto :setup_ollama_only
+
+:setup_gemini_only
+echo.
+set /p GEMINI_KEY="Nhap Gemini API Key cua ban (Lay mien phi tai aistudio.google.com): "
+python -c "
+import json, os
+config = {'base_url': 'https://www.69shuba.com/txt', 'output_dir': './truyen_tai_ve', 'source': '69shuba'}
+if os.path.exists('config.json'):
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except:
+        pass
+if 'translator' not in config:
+    config['translator'] = {}
+config['translator']['engine'] = 'gemini'
+config['translator']['gemini_api_key'] = os.environ.get('GEMINI_KEY', '').strip()
+with open('config.json', 'w', encoding='utf-8') as f:
+    json.dump(config, f, ensure_ascii=False, indent=2)
+"
+echo [OK] Da cau hinh mac dinh dung Gemini API Engine.
+echo [i] Bo qua buoc tai model Ollama 4.7GB de tiet kiem bang thong!
+goto :setup_complete
+
+:setup_both
+echo.
+set /p GEMINI_KEY="Nhap Gemini API Key neu muon cau hinh san (Nhan Enter de bo qua): "
+if "%GEMINI_KEY%"=="" goto :setup_ollama_only
+python -c "
+import json, os
+config = {}
+if os.path.exists('config.json'):
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except:
+        pass
+if 'translator' not in config:
+    config['translator'] = {}
+config['translator']['gemini_api_key'] = os.environ.get('GEMINI_KEY', '').strip()
+with open('config.json', 'w', encoding='utf-8') as f:
+    json.dump(config, f, ensure_ascii=False, indent=2)
+"
+goto :setup_ollama_only
+
+:setup_ollama_only
+rem === 7. Tai Model qwen2.5:7b-instruct ===
 echo [->] Dang kiem tra Model qwen2.5:7b-instruct...
 "%OLLAMA_CMD%" list | findstr "qwen2.5:7b-instruct" >nul 2>&1
 if %errorlevel% equ 0 (
@@ -159,6 +220,7 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+
 
 rem === 7. Xac nhan hoan tat ===
 :setup_complete

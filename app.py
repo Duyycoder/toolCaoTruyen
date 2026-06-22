@@ -3,7 +3,8 @@ import sys
 import asyncio
 import webbrowser
 import json
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -13,7 +14,7 @@ import uvicorn
 sys.path.insert(0, ".")
 
 from sources.registry import SOURCES, get_source
-from core.config_manager import load_config, save_config, get_default_config
+from core.config_manager import load_config, save_config, get_default_config, save_full_config
 from core.crawler_engine import download_chapters
 
 app = FastAPI(title="Tool Cào Truyện Web UI")
@@ -22,6 +23,13 @@ class ConfigModel(BaseModel):
     base_url: str
     output_dir: str
     source: str
+
+class TranslatorConfigModel(BaseModel):
+    engine: str
+    ollama_model: str
+    leak_threshold_percent: int
+    gemini_api_key: str
+    gemini_model: str
 
 # Endpoint trả về trang HTML chính
 @app.get("/", response_class=HTMLResponse)
@@ -45,7 +53,7 @@ async def get_config():
         config = get_default_config()
     return config
 
-# API 3: Lưu cấu hình mới
+# API 3: Lưu cấu hình mới của crawler
 @app.post("/api/config")
 async def update_config(config: ConfigModel):
     try:
@@ -53,6 +61,43 @@ async def update_config(config: ConfigModel):
         return {"status": "success", "config": config}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi khi lưu cấu hình: {str(e)}")
+
+# API 3b: Lưu cấu hình dịch thuật
+@app.post("/api/config/translator")
+async def update_translator_config(trans_config: TranslatorConfigModel):
+    try:
+        config = load_config()
+        if not config:
+            config = get_default_config()
+        config["translator"] = trans_config.dict()
+        save_full_config(config)
+        return {"status": "success", "config": config}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi khi lưu cấu hình dịch: {str(e)}")
+
+# API 3c: Lấy danh sách các ngôn ngữ dịch hỗ trợ
+@app.get("/api/languages")
+async def get_languages():
+    from translator import SUPPORTED_LANGUAGES
+    return {"languages": SUPPORTED_LANGUAGES}
+
+# API 3d: Lấy danh sách model Ollama được định nghĩa
+@app.get("/api/ollama/models")
+async def get_ollama_models_registry():
+    from translator import OLLAMA_MODELS
+    return {"models": OLLAMA_MODELS}
+
+# API 3e: Kiểm tra xem một model Ollama đã được tải chưa
+@app.get("/api/ollama/check-model")
+async def check_ollama_model(model: str):
+    try:
+        from translator import OllamaTranslator
+        translator = OllamaTranslator(model=model)
+        available = translator.is_available()
+        return {"model": model, "available": available}
+    except Exception as e:
+        return {"model": model, "available": False, "error": str(e)}
+
 
 # API 4: Chọn thư mục bằng Dialog hệ thống (Tkinter)
 def ask_directory_sync() -> str:
@@ -166,6 +211,216 @@ async def websocket_crawl(websocket: WebSocket):
             await websocket.send_json({
                 "event": "error",
                 "message": f"[✗] Lỗi hệ thống: {str(e)}"
+            })
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+# API 5: Chọn nhiều file .md bằng Dialog hệ thống (Tkinter)
+def ask_files_sync() -> List[str]:
+    import tkinter as tk
+    from tkinter import filedialog
+    
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    
+    selected_files = filedialog.askopenfilenames(
+        parent=root,
+        title="Chọn các file Markdown (.md) để dịch",
+        filetypes=[("Markdown files", "*.md"), ("All files", "*.*")]
+    )
+    root.destroy()
+    return list(selected_files)
+
+@app.get("/api/select-files")
+async def select_files():
+    try:
+        selected_files = await asyncio.to_thread(ask_files_sync)
+        if selected_files:
+            return {"status": "success", "files": [os.path.abspath(f) for f in selected_files]}
+        return {"status": "cancelled", "files": []}
+    except Exception as e:
+        return {"status": "error", "message": f"Không thể mở dialog chọn file: {str(e)}"}
+
+# WebSocket Endpoint: Điều khiển dịch truyện real-time
+@app.websocket("/ws/translate")
+async def websocket_translate(websocket: WebSocket):
+    await websocket.accept()
+    
+    main_loop = asyncio.get_running_loop()
+    stopped = False
+
+    # Định nghĩa callback gửi log thô về client
+    def ws_log_callback(msg: str) -> None:
+        asyncio.run_coroutine_threadsafe(
+            websocket.send_json({"event": "log", "message": msg}),
+            main_loop
+        )
+
+    # Task lắng nghe lệnh dừng từ Client
+    async def listen_for_client_messages():
+        nonlocal stopped
+        try:
+            async for message in websocket.iter_text():
+                try:
+                    data = json.loads(message)
+                    if data.get("command") == "stop":
+                        stopped = True
+                        await websocket.send_json({
+                            "event": "stopped_request",
+                            "message": "[i] Đang gửi yêu cầu dừng tới translator..."
+                        })
+                        break
+                except json.JSONDecodeError:
+                    pass
+        except WebSocketDisconnect:
+            stopped = True
+        except Exception:
+            stopped = True
+
+    try:
+        # Nhận cấu hình từ client
+        start_msg = await websocket.receive_text()
+        config = json.loads(start_msg)
+        
+        file_paths = config.get("file_paths", [])
+        folder_path = config.get("folder_path", "")
+        engine_type = config.get("engine", "ollama")
+        ollama_model = config.get("ollama_model", "qwen2.5:7b-instruct")
+        gemini_api_key = config.get("gemini_api_key", "")
+        gemini_model = config.get("gemini_model", "gemini-2.5-flash")
+        leak_threshold = int(config.get("leak_threshold_percent", 10))
+        
+        # Thu thập danh sách file dịch
+        files_to_translate = []
+        if file_paths:
+            files_to_translate = [os.path.abspath(f) for f in file_paths]
+        elif folder_path:
+            folder_abs = os.path.abspath(folder_path)
+            if os.path.exists(folder_abs) and os.path.isdir(folder_abs):
+                for entry in sorted(os.listdir(folder_abs)):
+                    if entry.endswith(".md"):
+                        files_to_translate.append(os.path.join(folder_abs, entry))
+        
+        if not files_to_translate:
+            await websocket.send_json({
+                "event": "error",
+                "message": "[✗] Không tìm thấy file .md nào để dịch."
+            })
+            return
+
+        await websocket.send_json({
+            "event": "start",
+            "total_files": len(files_to_translate),
+            "message": f"[+] Tìm thấy {len(files_to_translate)} file để tiến hành dịch."
+        })
+
+        # Khởi tạo Engine tương ứng
+        from translator import TRANSLATOR_ENGINES, OLLAMA_MODELS
+        
+        if engine_type == "ollama":
+            chunk_size = OLLAMA_MODELS.get(ollama_model, {}).get("chunk_size_chars", 350)
+            translator = TRANSLATOR_ENGINES["ollama"](
+                model=ollama_model,
+                max_chunk_chars=chunk_size,
+                leak_threshold_percent=leak_threshold
+            )
+        elif engine_type == "gemini":
+            translator = TRANSLATOR_ENGINES["gemini"](
+                api_key=gemini_api_key,
+                model=gemini_model,
+                leak_threshold_percent=leak_threshold
+            )
+        else:
+            await websocket.send_json({
+                "event": "error",
+                "message": f"[✗] Nguồn dịch '{engine_type}' không hợp lệ."
+            })
+            return
+
+        # Chạy task lắng nghe dừng song song
+        listen_task = asyncio.create_task(listen_for_client_messages())
+
+        # Vòng lặp xử lý từng file
+        for idx, file_path in enumerate(files_to_translate, 1):
+            if stopped:
+                break
+                
+            file_name = os.path.basename(file_path)
+            await websocket.send_json({
+                "event": "file_start",
+                "index": idx,
+                "file_name": file_name,
+                "message": f"\n[***] Bắt đầu dịch file {idx}/{len(files_to_translate)}: {file_name}"
+            })
+
+            file_dir = os.path.dirname(file_path)
+            output_dir = os.path.join(file_dir, "dich")
+            output_path = os.path.join(output_dir, file_name)
+
+            try:
+                def run_translation_file():
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        text = f.read()
+                    
+                    translated = translator.translate(text, progress_callback=ws_log_callback)
+                    
+                    os.makedirs(output_dir, exist_ok=True)
+                    with open(output_path, "w", encoding="utf-8") as f:
+                        f.write(translated)
+                    
+                    # Trích xuất thống kê
+                    total_p = len([p for p in re.split(r"\n\n", text) if p.strip()])
+                    failed_p = len(re.findall(r"> ⚠️ \[Đoạn này AI dịch không thành công", translated))
+                    success_p = max(0, total_p - failed_p)
+                    return success_p, failed_p, total_p
+
+                success_p, failed_p, total_p = await asyncio.to_thread(run_translation_file)
+                
+                await websocket.send_json({
+                    "event": "file_success",
+                    "index": idx,
+                    "file_name": file_name,
+                    "output_path": output_path,
+                    "success_paras": success_p,
+                    "failed_paras": failed_p,
+                    "total_paras": total_p,
+                    "message": f"[✓] Bản dịch đã được lưu tại: {output_path}\n"
+                               f"[✓] Kết quả: Thành công {success_p}/{total_p} đoạn, {failed_p} đoạn cần xem lại thủ công."
+                })
+            except Exception as e:
+                await websocket.send_json({
+                    "event": "file_error",
+                    "index": idx,
+                    "file_name": file_name,
+                    "message": f"[✗] Lỗi khi dịch: {str(e)}"
+                })
+
+        listen_task.cancel()
+
+        if stopped:
+            await websocket.send_json({
+                "event": "stopped",
+                "message": "[i] Quá trình dịch đã bị dừng bởi người dùng."
+            })
+        else:
+            await websocket.send_json({
+                "event": "completed",
+                "message": "[✓] Đã hoàn thành dịch toàn bộ danh sách file."
+            })
+
+    except WebSocketDisconnect:
+        stopped = True
+    except Exception as e:
+        try:
+            await websocket.send_json({
+                "event": "error",
+                "message": f"[✗] Lỗi hệ thống dịch: {str(e)}"
             })
         except Exception:
             pass

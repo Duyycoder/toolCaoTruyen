@@ -49,13 +49,31 @@ Chúng tôi đã đóng gói toàn bộ quá trình thiết lập phức tạp v
 
 ## 💡 Hướng dẫn sử dụng giao diện Web UI
 
-Sau khi chạy `python app.py`, trình duyệt sẽ mở giao diện Web. Bạn chỉ cần điền các thông tin:
+Sau khi chạy `python app.py`, trình duyệt sẽ mở giao diện Web với hai tab chức năng độc lập:
+
+### 1. Tab Cào Truyện Web
+Tải nội dung thô tiếng Trung từ website về máy:
 1. **Nguồn truyện:** Chọn nguồn truyện phù hợp (mặc định: `69shuba`).
 2. **ID Bộ Truyện:** Lấy từ link bộ truyện cần tải. Ví dụ: Nếu link là `https://www.69shuba.com/book/90438.htm` thì ID truyện là `90438`.
 3. **ID Chương bắt đầu:** Điền số thứ tự ID chương mà bạn muốn tải (Ví dụ: `40755198`).
 4. **Số lượng chương muốn tải:** Nhập số lượng chương cần tải về.
-5. **Thư mục lưu file:** Bấm nút **"Duyệt..."** để mở hộp thoại hệ thống chọn thư mục trực quan theo ý muốn.
-6. Bấm **"Bắt Đầu Tải Truyện"** để chạy. Bạn có thể theo dõi tiến độ chạy real-time trên thanh tiến trình và bảng nhật ký (Logs). Nhấn nút **"Dừng Tải Truyện"** (Màu đỏ) bất kỳ lúc nào để hủy tác vụ an toàn.
+5. **Thư mục lưu file:** Bấm nút **"Duyệt..."** để chọn thư mục lưu qua Windows Dialog trực quan.
+6. Bấm **"Bắt Đầu Tải Truyện"** để chạy. Nhấn nút **"Dừng Tải Truyện"** (Màu đỏ) bất kỳ lúc nào để dừng.
+
+### 2. Tab Dịch Truyện Offline
+Dịch các file `.md` tiếng Trung sang tiếng Việt mượt mà với nhiều lựa chọn Engine và Model:
+1. **Chọn đối tượng dịch:** 
+   - Bấm **"Chọn File..."** để chọn một hoặc nhiều file `.md` cụ thể trên ổ đĩa.
+   - Hoặc bấm **"Chọn Thư Mục..."** để quét và dịch toàn bộ file `.md` trong thư mục đó.
+2. **Engine dịch thuật:**
+   - **Ollama (Chạy Offline Local):** Dùng model AI chạy cục bộ không cần internet. Bạn có thể chọn giữa:
+     - *Qwen2.5 7B (Đã kiểm thử):* Model khuyên dùng, hoạt động mượt mà với card đồ họa 6-8GB VRAM. Đã được đo đạc tối ưu với chunk size 350 ký tự (tỉ lệ rò rỉ chữ Trung trung bình chỉ ~0.40%).
+     - *Qwen3 8B (Mới, chưa tối ưu riêng):* Model thử nghiệm, sử dụng tạm cấu hình chunk size giống bản 7B. Bạn cần chạy lệnh `ollama pull qwen3:8b` thủ công để tải model trước khi dùng.
+   - **Gemini API:** Dịch trực tuyến bằng Gemini API của Google (cần điền **Gemini API Key** và kết nối internet). Rất nhanh và dịch trơn tru bằng model `gemini-2.5-flash`.
+3. **Cơ chế 2 Tầng chống rò rỉ chữ Trung (Anti-leakage):**
+   - *Tầng 1 (Per-chunk Retry):* Tách văn bản thành các đoạn nhỏ (350 ký tự cho Ollama), nếu kết quả dịch chunk vượt quá ngưỡng rò rỉ (mặc định 10%), model tự hạ nhiệt độ và dịch lại.
+   - *Tầng 2 (Paragraph Repair):* Ghép lại toàn bộ file và quét từng đoạn văn nhỏ. Vá cục bộ những câu bị rò rỉ chữ Hán ở ranh giới chunk.
+   - *Đánh dấu lỗi thủ công:* Nếu đoạn văn vẫn dịch lỗi sau cả 2 tầng, hệ thống sẽ đánh dấu rõ ràng dạng `> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n[Nội dung gốc]` thay vì để trôi qua âm thầm. Đây là **thiết kế có chủ đích** của hệ thống vì các model 6-8B local không đảm bảo dịch hoàn hảo 100% văn tự sự novel dài.
 
 ---
 
@@ -64,5 +82,13 @@ Sau khi chạy `python app.py`, trình duyệt sẽ mở giao diện Web. Bạn 
 ### 1. File setup.bat chạy lại nhiều lần có tải lại mô hình AI không?
 * Không. Script `setup.bat` được thiết kế có tính **Idempotent (Không trùng lặp)**. Nếu hệ thống quét thấy Ollama và model `qwen2.5:7b-instruct` đã được tải thành công từ trước, nó sẽ lập tức báo "Đã sẵn sàng" và bỏ qua, không tải lại gì cả.
 
-### 2. Có thể đổi mô hình dịch hoặc cấu hình nâng cao ở đâu?
-* Toàn bộ cấu hình phiên chạy được đồng bộ tự động xuống file `config.json`. Mọi thông số về model, link cào và thư mục mặc định người dùng đều có thể tinh chỉnh trực tiếp qua giao diện Web UI, hệ thống sẽ tự động lưu lại cho phiên làm việc sau.
+### 2. Làm thế nào để dùng model Qwen3-8B?
+* Nhằm tiết kiệm dung lượng đĩa cho người dùng, `setup.bat` không tự động tải mô hình này. Nếu muốn thử nghiệm, vui lòng chạy lệnh dưới đây trong cửa sổ CMD của bạn:
+  ```bash
+  ollama pull qwen3:8b
+  ```
+  Sau khi tải xong, quay lại giao diện Web UI, dropdown chọn model sẽ tự động cập nhật trạng thái sang "Model đã sẵn sàng".
+
+### 3. Cách lấy Gemini API Key miễn phí?
+* Bạn có thể truy cập [Google AI Studio](https://aistudio.google.com/), đăng nhập bằng tài khoản Google cá nhân và nhấn "Create API Key" để nhận Key miễn phí dùng cho dịch thuật trực tuyến tốc độ cao.
+
