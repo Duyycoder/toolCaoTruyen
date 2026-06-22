@@ -217,6 +217,8 @@ def default_progress_callback(event_data: dict) -> None:
     elif event == "delay":
         delay = event_data.get("delay")
         print(f"{Color.DIM}    ⏳ Chờ {delay:.1f}s...{Color.RESET}")
+    elif event == "stopped":
+        print(f"\n{Color.YELLOW}[!] Quá trình tải đã bị người dùng dừng lại.{Color.RESET}\n")
     elif event == "complete":
         total_attempted = event_data.get("total_attempted")
         successful_downloads = event_data.get("successful_downloads")
@@ -257,7 +259,8 @@ def download_chapters(
     num_chapters: int,
     output_dir: str,
     parser: BaseSourceParser,
-    progress_callback: Optional[Callable[[dict], None]] = None
+    progress_callback: Optional[Callable[[dict], None]] = None,
+    is_stopped: Optional[Callable[[], bool]] = None
 ) -> None:
     """Vòng lặp chính: tải từng chương, parse, và lưu file.
     Tự động xử lý ID gap và có cơ chế circuit breaker.
@@ -271,6 +274,7 @@ def download_chapters(
         output_dir: Thư mục lưu.
         parser: Parser strategy xử lý cào/bóc tách cho nguồn truyện.
         progress_callback: Callback nhận dữ liệu JSON mô tả sự kiện tiến triển.
+        is_stopped: Hàm kiểm tra xem quá trình tải có bị dừng hay không.
     """
     if progress_callback is None:
         progress_callback = default_progress_callback
@@ -288,6 +292,14 @@ def download_chapters(
 
     try:
         while successful_downloads < num_chapters:
+            # --- Kiểm tra dừng giữa các lần lặp ---
+            if is_stopped and is_stopped():
+                progress_callback({
+                    "event": "stopped",
+                    "message": "Quá trình tải đã bị dừng bởi người dùng."
+                })
+                break
+
             # --- URL qua parser ---
             url = parser.build_chapter_url(story_id, current_chapter_id)
             total_attempted += 1
@@ -387,6 +399,12 @@ def download_chapters(
 
             # --- Anti-ban: sleep 1.0 - 2.5 giây ---
             if successful_downloads < num_chapters:
+                if is_stopped and is_stopped():
+                    progress_callback({
+                        "event": "stopped",
+                        "message": "Quá trình tải đã bị dừng bởi người dùng."
+                    })
+                    break
                 delay = random.uniform(1.0, 2.5)
                 progress_callback({
                     "event": "delay",

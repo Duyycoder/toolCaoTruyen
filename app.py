@@ -2,16 +2,19 @@ import os
 import sys
 import asyncio
 import webbrowser
+import json
 from typing import Dict, List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import uvicorn
 
 # Thêm thư mục hiện tại vào sys.path để python nhận diện core và sources
 sys.path.insert(0, ".")
 
-from sources.registry import SOURCES
+from sources.registry import SOURCES, get_source
 from core.config_manager import load_config, save_config, get_default_config
+from core.crawler_engine import download_chapters
 
 app = FastAPI(title="Tool Cào Truyện Web UI")
 
@@ -77,6 +80,101 @@ async def select_directory():
     except Exception as e:
         return {"status": "error", "message": f"Không thể mở dialog: {str(e)}"}
 
+# WebSocket Endpoint: Điều khiển cào truyện real-time
+@app.websocket("/ws/crawl")
+async def websocket_crawl(websocket: WebSocket):
+    await websocket.accept()
+    
+    main_loop = asyncio.get_running_loop()
+    stopped = False
+
+    # Định nghĩa callback gửi dữ liệu qua WebSocket
+    def ws_progress_callback(event_data: dict) -> None:
+        message = json.dumps(event_data, ensure_ascii=False)
+        # Sử dụng run_coroutine_threadsafe để đẩy tác vụ gửi tin nhắn về Event Loop chính từ Thread của Crawler
+        asyncio.run_coroutine_threadsafe(
+            websocket.send_text(message),
+            main_loop
+        )
+
+    def is_stopped_check() -> bool:
+        return stopped
+
+    # Task lắng nghe tin nhắn từ Client (lệnh dừng)
+    async def listen_for_client_messages():
+        nonlocal stopped
+        try:
+            async for message in websocket.iter_text():
+                try:
+                    data = json.loads(message)
+                    if data.get("command") == "stop":
+                        stopped = True
+                        # Thông báo phản hồi lệnh dừng
+                        await websocket.send_json({
+                            "event": "stopped_request",
+                            "message": "[i] Đang gửi yêu cầu dừng tới crawler..."
+                        })
+                        break
+                except json.JSONDecodeError:
+                    pass
+        except WebSocketDisconnect:
+            stopped = True
+        except Exception:
+            stopped = True
+
+    # Nhận cấu hình khởi chạy từ client
+    try:
+        start_msg = await websocket.receive_text()
+        config = json.loads(start_msg)
+        
+        # Trích xuất các thông số cấu hình
+        base_url = config.get("base_url")
+        story_id = int(config.get("story_id"))
+        start_chapter_id = int(config.get("start_chapter_id"))
+        num_chapters = int(config.get("num_chapters"))
+        output_dir = config.get("output_dir")
+        source = config.get("source")
+
+        # Khởi tạo parser tương ứng
+        parser = get_source(source, base_url)
+
+        # Chạy luồng lắng nghe lệnh dừng song song
+        listen_task = asyncio.create_task(listen_for_client_messages())
+
+        # Thực thi crawl trong thread pool riêng (vì download_chapters là blocking và dùng Selenium)
+        try:
+            await asyncio.to_thread(
+                download_chapters,
+                base_url=base_url,
+                story_id=story_id,
+                start_chapter_id=start_chapter_id,
+                num_chapters=num_chapters,
+                output_dir=output_dir,
+                parser=parser,
+                progress_callback=ws_progress_callback,
+                is_stopped=is_stopped_check
+            )
+        finally:
+            # Hủy task lắng nghe khi luồng cào kết thúc
+            listen_task.cancel()
+            
+    except WebSocketDisconnect:
+        stopped = True
+    except Exception as e:
+        # Gửi thông tin lỗi nếu có sự cố
+        try:
+            await websocket.send_json({
+                "event": "error",
+                "message": f"[✗] Lỗi hệ thống: {str(e)}"
+            })
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
 # Hàm tự động mở trình duyệt sau khi server khởi chạy
 def open_browser():
     try:
@@ -85,7 +183,7 @@ def open_browser():
         print(f"[!] Không thể tự động mở trình duyệt: {e}")
 
 if __name__ == "__main__":
-    # Đặt thời gian trễ 1s trước khi mở trình duyệt để đảm bảo server đã chạy
+    # Đặt thời gian trễ 1.5s trước khi mở trình duyệt để đảm bảo server đã chạy
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
