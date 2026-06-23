@@ -94,7 +94,9 @@ class Shuba69Parser(BaseSourceParser):
                 return None
 
             # Kiểm tra trang 404 (chương bị xóa / không tồn tại)
-            if "404" in final_title or "找不到" in final_title or "不存在" in final_title:
+            # So khớp chính xác "69书吧_404" hoặc "404" để tránh nhận nhầm chương 404 (ví dụ: 第404章)
+            final_title_strip = final_title.strip()
+            if final_title_strip == "69书吧_404" or final_title_strip == "404" or "找不到" in final_title or "不存在" in final_title:
                 return None
 
             return html
