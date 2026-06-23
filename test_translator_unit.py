@@ -36,8 +36,8 @@ class TestOllamaTranslator(unittest.TestCase):
         # Rò rỉ chữ Hán (nhiều hơn 5 ký tự và chiếm tỷ lệ vượt quá leak_threshold_ratio)
         self.assertTrue(self.translator.contains_chinese_leak("Bản dịch chứa chữ 奇迹种子魔法少女 cực mạnh."))
         
-        # Có chữ Hán nhưng số lượng cực ít (dưới 5 ký tự) -> không cấu thành rò rỉ nghiêm trọng
-        self.assertFalse(self.translator.contains_chinese_leak("Chương 9: 魔法"))
+        # Có chữ Hán (Cơ chế Zero Tolerance: dù chỉ 1 ký tự vẫn cấu thành rò rỉ)
+        self.assertTrue(self.translator.contains_chinese_leak("Chương 9: 魔法"))
 
     def test_build_system_prompt(self):
         prompt_zh = self.translator.build_system_prompt(source_lang="zh")
@@ -288,8 +288,9 @@ class TestGeminiTranslator(unittest.TestCase):
 
     def test_contains_chinese_leak(self):
         self.assertFalse(self.translator.contains_chinese_leak("Bản dịch hoàn toàn tiếng Việt."))
+        # Rò rỉ chữ Hán (Cơ chế Zero Tolerance: dù chỉ 1 ký tự vẫn cấu thành rò rỉ)
         self.assertTrue(self.translator.contains_chinese_leak("Bản dịch chứa chữ 奇迹种子魔法少女 cực mạnh."))
-        self.assertFalse(self.translator.contains_chinese_leak("Chương 9: 魔法"))
+        self.assertTrue(self.translator.contains_chinese_leak("Chương 9: 魔法"))
 
     def test_build_system_prompt(self):
         prompt_zh = self.translator.build_system_prompt(source_lang="zh")

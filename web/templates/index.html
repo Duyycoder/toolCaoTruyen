@@ -610,6 +610,12 @@
                 <p class="helper-text">Nếu bản dịch chunk chứa tỷ lệ chữ Hán vượt quá mức này, AI sẽ kích hoạt chế độ dịch lại và vá lỗi tự động.</p>
             </div>
 
+            <!-- Tự động trích xuất Glossary -->
+            <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: -0.5rem; margin-bottom: 1rem;">
+                <input type="checkbox" id="check-auto-extract-glossary" checked style="width: 20px; height: 20px; margin: 0; cursor: pointer;">
+                <label for="check-auto-extract-glossary" style="margin-bottom: 0; cursor: pointer; font-weight: normal;">Tự động quét & trích xuất thuật ngữ mới (Sử dụng Gemini API)</label>
+            </div>
+
             <!-- Nút bắt đầu dịch -->
             <button type="button" class="btn btn-primary btn-action-large" id="btn-start-translate">
                 <span>▶</span> Bắt Đầu Dịch Thuật
@@ -723,6 +729,7 @@
                     inputGeminiKey.value = config.translator.gemini_api_key || "";
                     inputGeminiModel.value = config.translator.gemini_model || "gemini-2.5-flash";
                     inputLeakThreshold.value = config.translator.leak_threshold_percent || 10;
+                    checkAutoExtractGlossary.checked = config.translator.auto_extract_glossary !== false;
                     
                     toggleEngineConfigBlocks(config.translator.engine);
                     await loadOllamaModelsRegistry(config.translator.ollama_model);
@@ -929,6 +936,7 @@
         const btnToggleGeminiKey = document.getElementById("btn-toggle-gemini-key");
         
         const inputLeakThreshold = document.getElementById("input-leak-threshold");
+        const checkAutoExtractGlossary = document.getElementById("check-auto-extract-glossary");
         const btnStartTranslate = document.getElementById("btn-start-translate");
         
         const transProgressPercent = document.getElementById("trans-progress-percent");
@@ -1199,7 +1207,8 @@
                         ollama_model: ollamaModel,
                         leak_threshold_percent: leakThreshold,
                         gemini_api_key: geminiKey,
-                        gemini_model: geminiModel
+                        gemini_model: geminiModel,
+                        auto_extract_glossary: checkAutoExtractGlossary.checked
                     })
                 });
             } catch (err) {
@@ -1226,6 +1235,7 @@
                     gemini_api_key: geminiKey,
                     gemini_model: geminiModel,
                     leak_threshold_percent: leakThreshold,
+                    auto_extract_glossary: checkAutoExtractGlossary.checked,
                     source_lang: selectSourceLang.value
                 };
                 wsTranslate.send(JSON.stringify(payload));

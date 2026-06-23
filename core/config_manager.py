@@ -18,7 +18,8 @@ def get_default_config() -> Dict[str, any]:
             "ollama_model": "qwen2.5:7b-instruct",
             "leak_threshold_percent": 10,
             "gemini_api_key": "",
-            "gemini_model": "gemini-flash-latest"
+            "gemini_model": "gemini-flash-latest",
+            "auto_extract_glossary": True
         }
     }
 

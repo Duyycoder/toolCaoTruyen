@@ -99,7 +99,7 @@ class GeminiTranslator(TranslatorEngine):
             return False
         return self.contains_chinese_leak(text)
 
-    def build_system_prompt(self, source_lang: str, is_title: bool = False) -> str:
+    def build_system_prompt(self, source_lang: str, is_title: bool = False, chunk_text: Optional[str] = None) -> str:
         """
         Xây dựng prompt chỉ dẫn dịch thuật động theo ngôn ngữ gốc.
         """
@@ -123,8 +123,17 @@ class GeminiTranslator(TranslatorEngine):
             f"6. If the input contains short questions, dialogues, or specific terms (e.g. '“对抗？”'), translate them fully into Vietnamese (e.g. '“Đối kháng?”') and do not write or copy any original {lang_name} characters in your output."
         )
 
+        active_glossary = {}
         if self.glossary:
-            glossary_text = "\n".join([f"- {k} -> {v}" for k, v in self.glossary.items()])
+            if chunk_text:
+                for k, v in self.glossary.items():
+                    if k in chunk_text:
+                        active_glossary[k] = v
+            else:
+                active_glossary = self.glossary
+
+        if active_glossary:
+            glossary_text = "\n".join([f"- {k} -> {v}" for k, v in active_glossary.items()])
             system_instruction += (
                 f"\n\nCRITICAL REQUIREMENT: You MUST strictly use the following Glossary for specific terms and names. "
                 f"Do not invent or use other translations for these terms:\n{glossary_text}\n"
@@ -136,23 +145,27 @@ class GeminiTranslator(TranslatorEngine):
 
     def extract_glossary_from_text(self, text: str, current_glossary: dict) -> dict:
         """
-        Trích xuất các danh từ riêng MỚI từ văn bản.
+        Trích xuất các danh từ riêng MỚI từ văn bản tiếng Trung bằng Gemini API.
         """
         prompt = (
-            "Dưới đây là một đoạn truyện tiên hiệp tiếng Trung.\n"
-            "Hãy phân tích và tìm ra tất cả các Tên nhân vật, Địa danh, Tên môn phái, Tuyệt chiêu, hoặc thuật ngữ riêng ĐÁNG CHÚ Ý xuất hiện trong đoạn.\n"
-            "Dịch chúng sang âm Hán Việt chuẩn xác (Ví dụ: 顾安 -> Cố An, 孟浪 -> Mạnh Lãng, 太玄门 -> Thái Huyền Môn).\n"
+            "Dưới đây là một đoạn truyện chữ (tiên hiệp/đô thị/mạng) tiếng Trung.\n"
+            "Nhiệm vụ của bạn là phân tích và lập bảng thuật ngữ dịch thuật (glossary) chuẩn xác nhất để làm dữ liệu dịch sang tiếng Việt.\n"
+            "Yêu cầu trích xuất cụ thể:\n"
+            "1. Tên nhân vật (Ví dụ: 顾安 -> Cố An, 张春秋 -> Trương Xuân Thu, 姬少玉 -> Cơ Thiếu Ngọc / Cơ Tiêu Ngọc). Đảm bảo xưng hô phù hợp với ngữ cảnh (Ví dụ: 顾安兄弟 -> Huynh đệ Cố An, KHÔNG dịch thành Cố An tỷ đệ).\n"
+            "2. Tên địa danh, phòng đường, thung lũng (Ví dụ: 药谷 -> Dược Cốc, 丹药堂 -> Đan Dược Đường, 沧州 -> Thương Châu, 太玄门 -> Thái Huyền Môn). Tránh dịch sang nghĩa thuần Việt sai lệch (Ví dụ: KHÔNG dịch 药谷 thành thung lũng thuốc / dược giá / thuốc thung).\n"
+            "3. Thuật ngữ tu tiên, cảnh giới, công pháp, thảo dược (Ví dụ: 筑基 -> Trúc Cơ, 修为 -> Tu vi, 不入流 -> Bất nhập lưu, 一阶 -> Nhất giai, 夺取寿命 -> Đoạt lấy tuổi thọ, 春木功 -> Xuân Mộc Công, 赤灵花 -> Xích Linh Hoa). Tránh dịch sai lệch bản chất tu tiên (Ví dụ: KHÔNG dịch 修为 thành thiên tài, KHÔNG dịch 不入流 thành không đạt tiêu chuẩn, KHÔNG dịch 赤灵花 thành Hồng Linh Hoa).\n"
+            "4. Từ lóng mạng và thuật ngữ cốt lõi (Ví dụ: 金手指 -> Ngón tay vàng / Hệ thống hack, KHÔNG dịch thành kim chỉ tay).\n"
         )
         if current_glossary:
             existing_keys = ", ".join(current_glossary.keys())
-            prompt += f"BỎ QUA và KHÔNG trích xuất lại các từ đã có trong danh sách sau: {existing_keys}.\n"
+            prompt += f"\nBỎ QUA và KHÔNG trích xuất lại các từ đã có trong danh sách từ điển hiện tại sau: {existing_keys}.\n"
         
         prompt += (
-            "TRẢ VỀ DUY NHẤT một chuỗi JSON hợp lệ (không chứa markdown markdown block ```json, chỉ có ngoặc nhọn). "
-            "Định dạng JSON: {\"Chữ Hán\": \"Bản dịch Hán Việt\"}.\n"
-            "Nếu không có từ mới nào đáng chú ý, hãy trả về: {}\n"
-            "Đoạn truyện:\n"
-            f"{text[:3000]}" # Giới hạn văn bản để tránh model bị quá tải hoặc quá dài
+            "\nTRẢ VỀ DUY NHẤT một chuỗi JSON hợp lệ (không chứa markdown block ```json, chỉ có ngoặc nhọn). "
+            "Định dạng JSON: {\"Chữ Hán\": \"Bản dịch Hán Việt hoặc Nghĩa chuẩn tương ứng\"}.\n"
+            "Nếu không có từ mới nào đáng chú ý, hãy trả về JSON rỗng: {}\n\n"
+            "Đoạn truyện cần trích xuất:\n"
+            f"{text[:3000]}"
         )
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
@@ -212,7 +225,7 @@ class GeminiTranslator(TranslatorEngine):
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         
-        system_instruction = self.build_system_prompt(source_lang, is_title)
+        system_instruction = self.build_system_prompt(source_lang, is_title, text)
 
         max_tokens = override_max_tokens if override_max_tokens is not None else 4096
 

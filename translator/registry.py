@@ -12,7 +12,9 @@ OLLAMA_MODELS = {
         "label": "Qwen2.5 7B (Đã kiểm thử)"
     },
     "qwen3:8b": {
-        "chunk_size_chars": 350,
-        "label": "Qwen3 8B (Mới, chưa tối ưu riêng)"
+        "chunk_size_chars": 400,
+        "temperature": 0.05,
+        "few_shot": True,
+        "label": "Qwen3 8B (Đã tối ưu giảm leak)"
     }
 }

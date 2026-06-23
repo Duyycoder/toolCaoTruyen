@@ -43,6 +43,10 @@ async def translate_filename_fn(filename: str, translator) -> str:
     if not title_to_translate:
         return filename
         
+    # Chỉ dịch nếu tên file chứa ký tự Trung Quốc (Hán) để tránh mô hình ảo hóa
+    if not re.search(r"[\u4e00-\u9fff]", title_to_translate):
+        return filename
+        
     try:
         # Dịch nhanh tiêu đề bằng translator. Chạy đồng bộ trong thread pool.
         translated = await asyncio.to_thread(translator.translate, title_to_translate)
@@ -57,6 +61,8 @@ async def translate_filename_fn(filename: str, translator) -> str:
         translated = " ".join(translated_lines)
         
         sanitized = sanitize_filename(translated)
+        if len(sanitized) > 80:
+            sanitized = sanitized[:80].strip()
         if sanitized:
             return f"{prefix}{sanitized}{ext}"
     except Exception as e:
@@ -75,6 +81,7 @@ class TranslatorConfigModel(BaseModel):
     leak_threshold_percent: int
     gemini_api_key: str
     gemini_model: str
+    auto_extract_glossary: Optional[bool] = True
 
 # Endpoint trả về trang HTML chính
 @app.get("/", response_class=HTMLResponse)
@@ -341,14 +348,19 @@ async def websocket_translate(websocket: WebSocket):
         gemini_model = config.get("gemini_model", "gemini-2.5-flash")
         leak_threshold = int(config.get("leak_threshold_percent", 10))
         output_dir_custom = config.get("output_dir", "").strip()
+        auto_extract_glossary = config.get("auto_extract_glossary", True)
         
-        # Thu thập danh sách file dịch
+        # Thu nhập danh sách file dịch và xác định thư mục truyện
         files_to_translate = []
+        story_dir = ""
         if file_paths:
             files_to_translate = [os.path.abspath(f) for f in file_paths]
+            if files_to_translate:
+                story_dir = os.path.dirname(files_to_translate[0])
         elif folder_path:
             folder_abs = os.path.abspath(folder_path)
             if os.path.exists(folder_abs) and os.path.isdir(folder_abs):
+                story_dir = folder_abs
                 for entry in sorted(os.listdir(folder_abs)):
                     if entry.endswith(".md"):
                         files_to_translate.append(os.path.join(folder_abs, entry))
@@ -366,9 +378,40 @@ async def websocket_translate(websocket: WebSocket):
             "message": f"[+] Tìm thấy {len(files_to_translate)} file để tiến hành dịch."
         })
 
+        # Khởi tạo GlossaryManager và nạp từ điển
+        from translator.glossary_manager import GlossaryManager
+        glossary_mgr = GlossaryManager(root_dir=".")
+        if story_dir:
+            glossary_mgr.load_story_glossary(story_dir)
+            combined_glossary = glossary_mgr.get_combined_glossary()
+            glossary_info_msg = f"[+] Đã tải glossary của truyện từ {os.path.basename(story_dir)} (Tổng cộng: {len(combined_glossary)} từ)."
+        else:
+            combined_glossary = glossary_mgr.global_glossary
+            glossary_info_msg = f"[+] Đã tải global glossary (Tổng cộng: {len(combined_glossary)} từ)."
+
+        await websocket.send_json({
+            "event": "log",
+            "message": glossary_info_msg
+        })
+
         # Khởi tạo Engine tương ứng
         from translator import TRANSLATOR_ENGINES, OLLAMA_MODELS
         
+        # Khởi tạo gemini_extractor độc lập nếu có api_key để hỗ trợ trích xuất glossary
+        gemini_extractor = None
+        if gemini_api_key and gemini_api_key.strip():
+            try:
+                gemini_extractor = TRANSLATOR_ENGINES["gemini"](
+                    api_key=gemini_api_key,
+                    model=gemini_model,
+                    leak_threshold_percent=leak_threshold
+                )
+            except Exception as e:
+                await websocket.send_json({
+                    "event": "log",
+                    "message": f"[WARN] Không thể khởi tạo gemini_extractor độc lập: {e}"
+                })
+
         if engine_type == "ollama":
             chunk_size = OLLAMA_MODELS.get(ollama_model, {}).get("chunk_size_chars", 350)
             translator = TRANSLATOR_ENGINES["ollama"](
@@ -377,17 +420,23 @@ async def websocket_translate(websocket: WebSocket):
                 leak_threshold_percent=leak_threshold
             )
         elif engine_type == "gemini":
-            translator = TRANSLATOR_ENGINES["gemini"](
-                api_key=gemini_api_key,
-                model=gemini_model,
-                leak_threshold_percent=leak_threshold
-            )
+            if gemini_extractor:
+                translator = gemini_extractor
+            else:
+                translator = TRANSLATOR_ENGINES["gemini"](
+                    api_key=gemini_api_key,
+                    model=gemini_model,
+                    leak_threshold_percent=leak_threshold
+                )
         else:
             await websocket.send_json({
                 "event": "error",
                 "message": f"[✗] Nguồn dịch '{engine_type}' không hợp lệ."
             })
             return
+
+        # Nạp từ điển vào translator
+        translator.set_glossary(combined_glossary)
 
         # Chạy task lắng nghe dừng song song
         listen_task = asyncio.create_task(listen_for_client_messages())
@@ -428,6 +477,37 @@ async def websocket_translate(websocket: WebSocket):
 
             try:
                 def run_translation_file():
+                    # 1. Tự động trích xuất từ mới từ 1500 ký tự đầu tiên của chương
+                    if auto_extract_glossary:
+                        try:
+                            with open(file_path, "r", encoding="utf-8") as f:
+                                text_content = f.read()
+                            
+                            if text_content.strip():
+                                # Chọn extractor phù hợp: Ưu tiên gemini_extractor nếu khả dụng, nếu không fallback sang translator hiện tại
+                                extractor = gemini_extractor if (gemini_extractor and gemini_extractor.is_available()) else translator
+                                
+                                ws_log_callback(f"[->] Đang quét và trích xuất từ mới bằng {extractor.__class__.__name__}...")
+                                new_terms = extractor.extract_glossary_from_text(text_content, translator.glossary)
+                                if new_terms:
+                                    # Lưu vào cả story và global glossary
+                                    added_story = glossary_mgr.save_story_glossary(new_terms)
+                                    added_global = glossary_mgr.save_global_glossary(new_terms)
+                                    if added_story > 0 or added_global > 0:
+                                        updated_glossary = glossary_mgr.get_combined_glossary()
+                                        translator.set_glossary(updated_glossary)
+                                        ws_log_callback(
+                                            f"[✓] Tự động trích xuất và thêm từ mới: {new_terms} "
+                                            f"(Thêm vào global: {added_global}, story: {added_story})"
+                                        )
+                                    else:
+                                        ws_log_callback(f"[i] Các từ trích xuất đã tồn tại trong glossary: {new_terms}")
+                                else:
+                                    ws_log_callback("[i] Không phát hiện thêm từ mới nào đáng chú ý.")
+                        except Exception as e:
+                            ws_log_callback(f"[WARN] Bỏ qua lỗi tự động trích xuất glossary: {e}")
+
+                    # 2. Thực hiện dịch file
                     translator.translate_file(file_path, output_path, progress_callback=ws_log_callback)
                     
                     report = getattr(translator, "last_report", {})

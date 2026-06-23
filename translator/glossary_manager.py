@@ -56,3 +56,24 @@ class GlossaryManager:
                 print(f"[Error] Không thể lưu story glossary: {e}")
                 
         return added_count
+
+    def save_global_glossary(self, new_terms: dict) -> int:
+        """
+        Thêm các từ mới vào global glossary và lưu xuống file.
+        Chỉ lưu nếu key chưa tồn tại để tránh rò rỉ từ dịch sai từ LLM.
+        Trả về số lượng từ mới đã được thêm.
+        """
+        added_count = 0
+        for k, v in new_terms.items():
+            if k not in self.global_glossary:
+                self.global_glossary[k] = v
+                added_count += 1
+                
+        if added_count > 0:
+            try:
+                with open(self.global_glossary_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.global_glossary, f, ensure_ascii=False, indent=4)
+            except Exception as e:
+                print(f"[Error] Không thể lưu global glossary: {e}")
+                
+        return added_count

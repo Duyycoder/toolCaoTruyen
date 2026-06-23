@@ -21,11 +21,18 @@ class OllamaTranslator(TranslatorEngine):
         self.model = model
         self.api_url = api_url
         self.num_ctx = num_ctx
-        self.temperature = temperature
-        self.max_chunk_chars = max_chunk_chars
+        
+        # Tự động nạp cấu hình bổ sung từ registry nếu có
+        from .registry import OLLAMA_MODELS
+        model_config = OLLAMA_MODELS.get(model, {})
+        
+        self.temperature = model_config.get("temperature", temperature)
+        self.max_chunk_chars = model_config.get("chunk_size_chars", max_chunk_chars)
+        self.few_shot = model_config.get("few_shot", False)
+        
         self.leak_threshold_ratio = leak_threshold_percent / 100.0
         self.chinese_char_pattern = re.compile(r"[\u4e00-\u9fff]")
-        self.num_predict = max(2048, max_chunk_chars * 15)
+        self.num_predict = max(2048, self.max_chunk_chars * 15)
         self.last_done_reason = None
 
     def is_available(self) -> bool:
@@ -113,7 +120,7 @@ class OllamaTranslator(TranslatorEngine):
             return False
         return self.contains_chinese_leak(text)
 
-    def build_system_prompt(self, source_lang: str, is_title: bool = False) -> str:
+    def build_system_prompt(self, source_lang: str, is_title: bool = False, chunk_text: Optional[str] = None) -> str:
         """
         Xây dựng prompt chỉ dẫn dịch thuật động theo ngôn ngữ gốc.
         """
@@ -137,8 +144,17 @@ class OllamaTranslator(TranslatorEngine):
             f"6. If the input contains short questions, dialogues, or specific terms (e.g. '“对抗？”'), translate them fully into Vietnamese (e.g. '“Đối kháng?”') and do not write or copy any original {lang_name} characters in your output."
         )
 
+        active_glossary = {}
         if self.glossary:
-            glossary_text = "\n".join([f"- {k} -> {v}" for k, v in self.glossary.items()])
+            if chunk_text:
+                for k, v in self.glossary.items():
+                    if k in chunk_text:
+                        active_glossary[k] = v
+            else:
+                active_glossary = self.glossary
+
+        if active_glossary:
+            glossary_text = "\n".join([f"- {k} -> {v}" for k, v in active_glossary.items()])
             system_instruction += (
                 f"\n\nCRITICAL REQUIREMENT: You MUST strictly use the following Glossary for specific terms and names. "
                 f"Do not invent or use other translations for these terms:\n{glossary_text}\n"
@@ -153,19 +169,23 @@ class OllamaTranslator(TranslatorEngine):
         Trích xuất các danh từ riêng MỚI từ văn bản bằng Ollama.
         """
         prompt = (
-            "Dưới đây là một đoạn truyện tiên hiệp tiếng Trung.\n"
-            "Hãy phân tích và tìm ra tất cả các Tên nhân vật, Địa danh, Tên môn phái, Tuyệt chiêu, hoặc thuật ngữ riêng ĐÁNG CHÚ Ý xuất hiện trong đoạn.\n"
-            "Dịch chúng sang âm Hán Việt chuẩn xác (Ví dụ: 顾安 -> Cố An, 孟浪 -> Mạnh Lãng, 太玄门 -> Thái Huyền Môn).\n"
+            "Dưới đây là một đoạn truyện chữ (tiên hiệp/đô thị/mạng) tiếng Trung.\n"
+            "Nhiệm vụ của bạn là phân tích và lập bảng thuật ngữ dịch thuật (glossary) chuẩn xác nhất để làm dữ liệu dịch sang tiếng Việt.\n"
+            "Yêu cầu trích xuất cụ thể:\n"
+            "1. Tên nhân vật (Ví dụ: 顾安 -> Cố An, 张春秋 -> Trương Xuân Thu, 姬少玉 -> Cơ Thiếu Ngọc / Cơ Tiêu Ngọc). Đảm bảo xưng hô phù hợp với ngữ cảnh (Ví dụ: 顾安兄弟 -> Huynh đệ Cố An, KHÔNG dịch thành Cố An tỷ đệ).\n"
+            "2. Tên địa danh, phòng đường, thung lũng (Ví dụ: 药谷 -> Dược Cốc, 丹药堂 -> Đan Dược Đường, 沧州 -> Thương Châu, 太玄门 -> Thái Huyền Môn). Tránh dịch sang nghĩa thuần Việt sai lệch (Ví dụ: KHÔNG dịch 药谷 thành thung lũng thuốc / dược giá / thuốc thung).\n"
+            "3. Thuật ngữ tu tiên, cảnh giới, công pháp, thảo dược (Ví dụ: 筑基 -> Trúc Cơ, 修为 -> Tu vi, 不入流 -> Bất nhập lưu, 一阶 -> Nhất giai, 夺取寿命 -> Đoạt lấy tuổi thọ, 春木功 -> Xuân Mộc Công, 赤灵花 -> Xích Linh Hoa). Tránh dịch sai lệch bản chất tu tiên (Ví dụ: KHÔNG dịch 修为 thành thiên tài, KHÔNG dịch 不入流 thành không đạt tiêu chuẩn, KHÔNG dịch 赤灵花 thành Hồng Linh Hoa).\n"
+            "4. Từ lóng mạng và thuật ngữ cốt lõi (Ví dụ: 金手指 -> Ngón tay vàng / Hệ thống hack, KHÔNG dịch thành kim chỉ tay).\n"
         )
         if current_glossary:
             existing_keys = ", ".join(current_glossary.keys())
-            prompt += f"BỎ QUA và KHÔNG trích xuất lại các từ đã có trong danh sách sau: {existing_keys}.\n"
+            prompt += f"\nBỎ QUA và KHÔNG trích xuất lại các từ đã có trong danh sách từ điển hiện tại sau: {existing_keys}.\n"
         
         prompt += (
-            "TRẢ VỀ DUY NHẤT một chuỗi JSON hợp lệ (không chứa markdown block ```json, chỉ bắt đầu bằng { và kết thúc bằng }). "
-            "Định dạng JSON: {\"Chữ Hán\": \"Bản dịch Hán Việt\"}.\n"
+            "\nTRẢ VỀ DUY NHẤT một chuỗi JSON hợp lệ (không chứa markdown block ```json, chỉ có ngoặc nhọn). "
+            "Định dạng JSON: {\"Chữ Hán\": \"Bản dịch Hán Việt hoặc Nghĩa chuẩn tương ứng\"}.\n"
             "Nếu không có từ mới nào đáng chú ý, hãy trả về JSON rỗng: {}\n\n"
-            "Đoạn truyện:\n"
+            "Đoạn truyện cần trích xuất:\n"
             f"{text[:1500]}"
         )
         
@@ -203,16 +223,26 @@ class OllamaTranslator(TranslatorEngine):
         Gọi API Ollama Chat để dịch văn bản với cơ chế thử lại nếu lỗi kết nối/timeout.
         """
         if system_instruction is None:
-            system_instruction = self.build_system_prompt(source_lang, is_title)
+            system_instruction = self.build_system_prompt(source_lang, is_title, text)
 
         num_predict = override_num_predict if override_num_predict is not None else self.num_predict
 
+        messages = [
+            {"role": "system", "content": system_instruction}
+        ]
+
+        if self.few_shot and not response_json:
+            # Sử dụng few-shot chat giúp model tuân thủ cấu trúc dịch thuật và triệt tiêu leak chữ Hán
+            messages.extend([
+                {"role": "user", "content": "“对抗？”\n筑基期的顾安决定在药园里默默修炼。"},
+                {"role": "assistant", "content": "“Đối kháng?”\nCố An ở giai đoạn Trúc Cơ quyết định tu luyện một cách âm thầm ở trong dược viên."}
+            ])
+
+        messages.append({"role": "user", "content": text})
+
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": text}
-            ],
+            "messages": messages,
             "stream": False,
             "options": {
                 "temperature": self.temperature,
@@ -242,7 +272,7 @@ class OllamaTranslator(TranslatorEngine):
             except Exception as e:
                 if attempt < max_retries:
                     wait_time = backoff_seconds[attempt]
-                    print(f"[WARN] Lỗi kết nối/timeout tới Ollama ({e}). Đang thử lại sau {wait_time}s...")
+                    print(f"[WARN] Loi ket noi/timeout toi Ollama ({e}). Dang thu lai sau {wait_time}s...")
                     time.sleep(wait_time)
                     continue
                 raise e
