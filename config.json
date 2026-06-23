@@ -1,4 +1,12 @@
 {
   "base_url": "https://www.69shuba.com/txt",
-  "output_dir": "./truyen_tai_ve"
+  "output_dir": "C:\\Users\\ASUS\\Downloads\\TestTool",
+  "source": "69shuba",
+  "translator": {
+    "engine": "ollama",
+    "ollama_model": "qwen3:8b",
+    "leak_threshold_percent": 10,
+    "gemini_api_key": "",
+    "gemini_model": "gemini-flash-latest"
+  }
 }

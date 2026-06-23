@@ -1,35 +1,37 @@
 @echo off
-chcp 65001 >nul 2>&1
-title Tool Cào Truyện - Đang chạy...
+chcp 437 >nul 2>&1
+title Khoi chay Tool Cao va Dich Truyen Chu
+cls
 
-echo.
-echo ════════════════════════════════════════════════════════════
-echo    📖  Tool Cào Truyện - Khởi động
-echo ════════════════════════════════════════════════════════════
+echo ============================================================
+echo    Tool Cao va Dich Truyen Chu - Web UI
+echo ============================================================
 echo.
 
-REM === Kiểm tra Python ===
+REM Check if Python is installed
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [!] Chưa cài Python! Hãy chạy install.bat trước.
+    echo [ERROR] Python is not installed or not in PATH!
+    echo Please run setup.bat first to configure and install dependencies.
+    echo.
     pause
     exit /b 1
 )
 
-REM === Kiểm tra thư viện ===
-python -c "import selenium; from bs4 import BeautifulSoup" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [!] Chưa cài thư viện! Đang tự động cài đặt...
-    echo.
-    pip install -r requirements.txt
-    echo.
+REM Check if virtual environment exists
+if exist ".venv\Scripts\python.exe" (
+    echo [INFO] Starting application using Virtual Environment venv...
+    .venv\Scripts\python app.py
+) else (
+    echo [WARN] Virtual environment venv not found.
+    echo Attempting to run using system Python...
+    python app.py
 )
 
-REM === Chạy tool ===
-python main.py
-
-echo.
-echo ────────────────────────────────────────────────────────────
-echo    Nhấn phím bất kỳ để đóng cửa sổ...
-echo ────────────────────────────────────────────────────────────
-pause >nul
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Application failed to start.
+    echo Please run setup.bat to reconfigure and install requirements.
+    echo.
+    pause
+)
