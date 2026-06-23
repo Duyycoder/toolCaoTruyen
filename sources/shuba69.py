@@ -281,3 +281,67 @@ class Shuba69Parser(BaseSourceParser):
         text = text.strip()
 
         return text
+
+    def get_next_chapter_url(self, driver: Any) -> Optional[str]:
+        """Lấy URL của chương tiếp theo bằng cách tìm phần tử nút 'chương sau'
+        qua Selenium, đọc thuộc tính href.
+        """
+        try:
+            from selenium.webdriver.common.by import By
+            # Thử tìm phần tử a chứa chữ "下一章" qua Selenium
+            element = None
+            try:
+                # Ưu tiên tìm trong div.page1 chứa class trang điều hướng
+                element = driver.find_element(By.XPATH, "//div[contains(@class, 'page1')]/a[contains(text(), '下一章')]")
+            except Exception:
+                pass
+
+            if not element:
+                try:
+                    # Fallback tìm bất kỳ thẻ a nào chứa "下一章"
+                    element = driver.find_element(By.XPATH, "//a[contains(text(), '下一章')]")
+                except Exception:
+                    pass
+
+            if element:
+                href = element.get_attribute("href")
+                if href:
+                    href = href.strip()
+                    # Loại bỏ URL không chứa '/txt/' (ví dụ trỏ sang trang detail /book/ hoặc list)
+                    if "/txt/" not in href:
+                        return None
+                    return href
+
+            # Fallback: dùng BeautifulSoup bóc tách trực tiếp từ page_source nếu Selenium gặp lỗi DOM
+            html = driver.page_source
+            soup = BeautifulSoup(html, "html.parser")
+            
+            # Tìm trong div.page1 trước
+            page1_div = soup.select_one("div.page1")
+            next_link = None
+            if page1_div:
+                for a in page1_div.find_all("a"):
+                    if "下一章" in a.get_text():
+                        next_link = a
+                        break
+            
+            if not next_link:
+                # Tìm toàn bộ trang
+                for a in soup.find_all("a"):
+                    if "下一章" in a.get_text():
+                        next_link = a
+                        break
+
+            if next_link:
+                href = next_link.get("href", "").strip()
+                if href:
+                    from urllib.parse import urljoin
+                    abs_url = urljoin(driver.current_url, href)
+                    if "/txt/" in abs_url:
+                        return abs_url
+
+            return None
+        except Exception as e:
+            print(f"\n{Color.RED}[✗] Lỗi khi xác định chương kế tiếp: {e}{Color.RESET}")
+            return None
+

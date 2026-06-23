@@ -252,6 +252,19 @@ def default_progress_callback(event_data: dict) -> None:
         print(f"{Color.CYAN}{'═' * 60}{Color.RESET}\n")
 
 
+def extract_chapter_id_from_url(url: str, fallback_id: int) -> int:
+    """Trích xuất ID chương từ URL chương truyện phục vụ cho callback hiển thị.
+    KHÔNG được dùng trong bất kỳ điều kiện if/while nào quyết định luồng chạy.
+    """
+    try:
+        match = re.search(r"/txt/\d+/(\d+)", url)
+        if match:
+            return int(match.group(1))
+    except Exception:
+        pass
+    return fallback_id
+
+
 def download_chapters(
     base_url: str,
     story_id: int,
@@ -263,7 +276,7 @@ def download_chapters(
     is_stopped: Optional[Callable[[], bool]] = None
 ) -> None:
     """Vòng lặp chính: tải từng chương, parse, và lưu file.
-    Tự động xử lý ID gap và có cơ chế circuit breaker.
+    Điều hướng theo liên kết thật (next-chapter url) thay vì tự tăng ID + 1.
     Thông báo tiến độ qua progress_callback để hỗ trợ Web UI.
 
     Args:
@@ -281,9 +294,15 @@ def download_chapters(
 
     successful_downloads: int = 0
     consecutive_failures: int = 0
-    current_chapter_id: int = start_chapter_id
     story_name: Optional[str] = None
     total_attempted: int = 0
+    reached_end: bool = False
+
+    # Khởi tạo URL chương đầu tiên từ ID người dùng nhập
+    current_url: str = parser.build_chapter_url(story_id, start_chapter_id)
+    
+    # Tập hợp các URL đã tải trong phiên này để chống lặp vô hạn
+    visited_urls = set()
 
     # --- Khởi tạo browser ---
     driver = create_browser()
@@ -300,73 +319,88 @@ def download_chapters(
                 })
                 break
 
-            # --- URL qua parser ---
-            url = parser.build_chapter_url(story_id, current_chapter_id)
-            total_attempted += 1
-            is_first = (total_attempted == 1)
-
-            progress_callback({
-                "event": "before_download",
-                "chapter_id": current_chapter_id,
-                "message": f"Đang tải ID {current_chapter_id}..."
-            })
-
-            # --- Tải HTML qua parser ---
-            html = parser.get_html(driver, url, is_first_request=is_first)
-
-            # --- Thất bại: chương không tồn tại ---
-            if html is None:
-                consecutive_failures += 1
+            # Kiểm tra chống lặp vô hạn
+            if current_url in visited_urls:
                 progress_callback({
-                    "event": "chapter_not_exist",
+                    "event": "error",
+                    "message": f"[✗] Lỗi vòng lặp vô hạn: Phát hiện URL đã tải trước đó trong phiên này ({current_url})."
+                })
+                break
+
+            # Trích xuất ID chỉ để phục vụ callback hiển thị
+            current_chapter_id = extract_chapter_id_from_url(current_url, start_chapter_id)
+
+            # --- Vòng lặp thử lại cùng một URL (tối đa 3 lần) ---
+            page_load_retry_count = 0
+            load_success = False
+            html = None
+            result = None
+
+            while page_load_retry_count < 3:
+                total_attempted += 1
+                is_first = (total_attempted == 1)
+
+                retry_suffix = f" (thử lại {page_load_retry_count}/2)" if page_load_retry_count > 0 else ""
+                progress_callback({
+                    "event": "before_download",
                     "chapter_id": current_chapter_id,
-                    "consecutive_failures": consecutive_failures,
-                    "max_failures": MAX_CONSECUTIVE_FAILURES,
-                    "message": "Chương không tồn tại."
+                    "message": f"Đang tải ID {current_chapter_id}{retry_suffix}..."
                 })
 
-                # CIRCUIT BREAKER
+                # Tải HTML
+                html = parser.get_html(driver, current_url, is_first_request=is_first)
+
+                # Nếu tải HTML thành công, tiến hành parse
+                if html is not None:
+                    result = parser.parse_chapter(html)
+                    if result is not None:
+                        load_success = True
+                        break
+
+                page_load_retry_count += 1
+
+                # Gửi thông báo lỗi tạm thời qua callback
+                if html is None:
+                    progress_callback({
+                        "event": "chapter_not_exist",
+                        "chapter_id": current_chapter_id,
+                        "consecutive_failures": page_load_retry_count,
+                        "max_failures": 3,
+                        "message": f"Chương không tồn tại hoặc lỗi mạng (thử lại {page_load_retry_count}/3)."
+                    })
+                else:
+                    progress_callback({
+                        "event": "chapter_empty",
+                        "chapter_id": current_chapter_id,
+                        "consecutive_failures": page_load_retry_count,
+                        "max_failures": 3,
+                        "message": f"Nội dung chương rỗng (thử lại {page_load_retry_count}/3)."
+                    })
+
+                time.sleep(random.uniform(0.5, 1.5))
+
+            # --- Xử lý khi thất bại hoàn toàn 3 lần trên cùng 1 URL ---
+            if not load_success:
+                consecutive_failures += 1
+                progress_callback({
+                    "event": "error",
+                    "message": f"[✗] Không thể tải chương ID {current_chapter_id} sau 3 lần thử."
+                })
+
+                # CIRCUIT BREAKER TỔNG
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     progress_callback({
                         "event": "circuit_breaker",
                         "max_failures": MAX_CONSECUTIVE_FAILURES,
-                        "reason": "not_exist",
-                        "message": "Circuit breaker kích hoạt do liên tục gặp chương trống hoặc không tồn tại."
+                        "reason": "load_error",
+                        "message": f"Circuit breaker kích hoạt do {MAX_CONSECUTIVE_FAILURES} lỗi chương liên tiếp."
                     })
-                    break
+                # Do không thể lấy được URL tiếp theo nếu trang hiện tại lỗi, ta bắt buộc phải dừng vòng lặp tải
+                break
 
-                current_chapter_id += 1
-                time.sleep(random.uniform(0.5, 1.5))
-                continue
-
-            # --- Parse HTML qua parser ---
-            result = parser.parse_chapter(html)
-
-            if result is None:
-                consecutive_failures += 1
-                progress_callback({
-                    "event": "chapter_empty",
-                    "chapter_id": current_chapter_id,
-                    "consecutive_failures": consecutive_failures,
-                    "max_failures": MAX_CONSECUTIVE_FAILURES,
-                    "message": "Nội dung chương rỗng."
-                })
-
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    progress_callback({
-                        "event": "circuit_breaker",
-                        "max_failures": MAX_CONSECUTIVE_FAILURES,
-                        "reason": "empty",
-                        "message": "Circuit breaker kích hoạt do nội dung chương trống liên tiếp."
-                    })
-                    break
-
-                current_chapter_id += 1
-                time.sleep(random.uniform(0.5, 1.5))
-                continue
-
-            # --- THÀNH CÔNG! ---
+            # --- THÀNH CÔNG! Reset các bộ đếm ngay lập tức ---
             consecutive_failures = 0
+            visited_urls.add(current_url)
             successful_downloads += 1
 
             parsed_story_name, chapter_name, content = result
@@ -394,8 +428,15 @@ def download_chapters(
                 "message": f"Chương {successful_downloads}/{num_chapters}: {chapter_name}"
             })
 
-            # --- ID tiếp theo ---
-            current_chapter_id += 1
+            # --- Xác định URL chương tiếp theo từ DOM thực ---
+            next_url = parser.get_next_chapter_url(driver)
+
+            if next_url is None:
+                # Đã đến chương cuối cùng của truyện
+                reached_end = True
+                break
+
+            current_url = next_url
 
             # --- Anti-ban: sleep 1.0 - 2.5 giây ---
             if successful_downloads < num_chapters:
@@ -430,5 +471,7 @@ def download_chapters(
         "output_dir": output_dir,
         "consecutive_failures": consecutive_failures,
         "max_failures": MAX_CONSECUTIVE_FAILURES,
-        "message": "Hoàn tất quá trình tải."
+        "reached_end": reached_end,
+        "message": "Đã tải đến chương cuối của truyện." if reached_end else "Hoàn tất quá trình tải."
     })
+

@@ -61,3 +61,15 @@ class BaseSourceParser(ABC):
             True nếu hợp lệ, False nếu không.
         """
         pass
+
+    def get_next_chapter_url(self, driver: Any) -> Optional[str]:
+        """Lấy URL của chương tiếp theo từ driver.
+
+        Args:
+            driver: Instance webdriver.Chrome đang dùng.
+
+        Returns:
+            URL chương tiếp theo hoặc None.
+        """
+        return None
+

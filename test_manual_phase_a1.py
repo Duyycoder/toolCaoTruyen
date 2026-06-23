@@ -17,11 +17,13 @@ from core.crawler_engine import download_chapters
 class MockParser(BaseSourceParser):
     def __init__(self, base_url: str):
         self.base_url = base_url
+        self.current_url = ""
 
     def build_chapter_url(self, story_id: int, chapter_id: int) -> str:
         return f"{self.base_url}/{story_id}/{chapter_id}"
 
     def get_html(self, driver: Any, url: str, is_first_request: bool = False) -> Optional[str]:
+        self.current_url = url
         # Mock HTML cho chương 1 và chương 2
         if "40755198" in url:
             return "chuan_1"
@@ -40,6 +42,13 @@ class MockParser(BaseSourceParser):
     def is_valid_response(self, html: str) -> bool:
         return True
 
+    def get_next_chapter_url(self, driver: Any) -> Optional[str]:
+        if "40755198" in self.current_url:
+            return "https://mocksite.com/txt/123/40755199"
+        elif "40755199" in self.current_url:
+            return "https://mocksite.com/txt/123/40755200"
+        return None
+
 
 def run_tests():
     print("==================================================")
@@ -55,7 +64,7 @@ def run_tests():
         print(f"      [Event Callback]: {event_data.get('event')} -> {event_data.get('message')}")
 
     # Tải 3 chương, bắt đầu từ ID 40755198
-    # Chương 1 & 2 sẽ thành công. Chương 3 sẽ lỗi liên tiếp và kích hoạt Circuit Breaker
+    # Chương 1 & 2 sẽ thành công. Chương 3 sẽ lỗi liên tiếp và dừng tiến trình
     print("[+] Khởi chạy download_chapters với MockParser và Callback giả lập...")
     download_chapters(
         base_url="https://mocksite.com/txt",
@@ -102,30 +111,26 @@ def run_tests():
     # 8. Sự kiện delay
     assert events[7]["event"] == "delay"
 
-    # 9. Tải chương 3 (ID 40755200) -> thất bại (không tồn tại)
+    # 9. Tải chương 3 (ID 40755200) -> thất bại (không tồn tại) 3 lần
     idx = 8
-    # Từ chương 3 trở đi sẽ lỗi liên tiếp 10 lần do MockParser trả về None cho các chương sau
-    for i in range(10):
-        # before_download của từng ID tăng dần
+    for i in range(3):
         assert events[idx]["event"] == "before_download"
-        assert events[idx]["chapter_id"] == 40755200 + i
+        assert events[idx]["chapter_id"] == 40755200
         idx += 1
         
-        # chapter_not_exist tương ứng
         assert events[idx]["event"] == "chapter_not_exist"
-        assert events[idx]["chapter_id"] == 40755200 + i
+        assert events[idx]["chapter_id"] == 40755200
         assert events[idx]["consecutive_failures"] == i + 1
         idx += 1
 
-    # 10. Kích hoạt Circuit Breaker
-    assert events[idx]["event"] == "circuit_breaker"
-    assert events[idx]["reason"] == "not_exist"
+    # 10. Lỗi hoàn toàn
+    assert events[idx]["event"] == "error"
     idx += 1
 
     # 11. Sự kiện hoàn tất
     assert events[idx]["event"] == "complete"
     assert events[idx]["successful_downloads"] == 2
-    assert events[idx]["total_attempted"] == 12  # 2 thành công + 10 lỗi
+    assert events[idx]["total_attempted"] == 5  # 2 thành công + 3 lỗi thử lại
 
     print("    [✓] Trình tự sự kiện đạt chuẩn (PASSED)")
 

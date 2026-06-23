@@ -883,6 +883,9 @@
                     } else if (data.successful_downloads === count) {
                         logToConsole(`   Trạng thái           : Hoàn tất ✓`, "success");
                         progressChaptersTxt.textContent = `Hoàn tất ${count}/${count} chương`;
+                    } else if (data.reached_end) {
+                        logToConsole(`   Trạng thái           : Đã tải đến chương cuối của truyện ✓`, "success");
+                        progressChaptersTxt.textContent = `Hoàn tất (Đã hết truyện)`;
                     } else {
                         logToConsole(`   Trạng thái           : Bị gián đoạn hoặc đã dừng`, "warning");
                     }

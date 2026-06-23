@@ -114,9 +114,66 @@ def run_tests():
     assert url == "https://www.69shuba.com/txt/90438/40755198"
     print("    [✓] Đạt chuẩn (PASSED)")
 
+    # --- Test Case 4: get_next_chapter_url ---
+    print("\n[+] Test Case 4: get_next_chapter_url (Tự động bóc tách link chương tiếp theo)")
+
+    class MockDriver:
+        def __init__(self, page_source: str, current_url: str):
+            self.page_source = page_source
+            self.current_url = current_url
+
+    # Case 4a: Có chương sau (đường dẫn đầy đủ tuyệt đối)
+    html_has_next = """
+    <div class="page1">
+        <a href="https://www.69shuba.com/txt/90438/40755197">上一章</a>
+        <a href="https://www.69shuba.com/txt/90438/40755199">下一章</a>
+    </div>
+    """
+    driver_has_next = MockDriver(html_has_next, "https://www.69shuba.com/txt/90438/40755198")
+    next_url = parser.get_next_chapter_url(driver_has_next)
+    print(f"    Trường hợp có chương sau: {next_url}")
+    assert next_url == "https://www.69shuba.com/txt/90438/40755199"
+
+    # Case 4b: Chương cuối (href trỏ về book page, không chứa /txt/)
+    html_last_chapter = """
+    <div class="page1">
+        <a href="https://www.69shuba.com/txt/90438/40755197">上一章</a>
+        <a href="https://www.69shuba.com/book/90438.htm">下一章</a>
+    </div>
+    """
+    driver_last_chapter = MockDriver(html_last_chapter, "https://www.69shuba.com/txt/90438/41039609")
+    next_url_last = parser.get_next_chapter_url(driver_last_chapter)
+    print(f"    Trường hợp chương cuối (book link): {next_url_last}")
+    assert next_url_last is None
+
+    # Case 4c: Đường dẫn tương đối (vẫn tự động phân giải thành URL tuyệt đối nhờ urljoin)
+    html_relative_next = """
+    <div class="page1">
+        <a href="/txt/90438/40755199">下一章</a>
+    </div>
+    """
+    driver_relative = MockDriver(html_relative_next, "https://www.69shuba.com/txt/90438/40755198")
+    next_url_rel = parser.get_next_chapter_url(driver_relative)
+    print(f"    Trường hợp link tương đối: {next_url_rel}")
+    assert next_url_rel == "https://www.69shuba.com/txt/90438/40755199"
+
+    # Case 4d: Không tìm thấy nút Next
+    html_no_next = """
+    <div class="page1">
+        <a href="https://www.69shuba.com/txt/90438/40755197">上一章</a>
+    </div>
+    """
+    driver_no_next = MockDriver(html_no_next, "https://www.69shuba.com/txt/90438/40755198")
+    next_url_none = parser.get_next_chapter_url(driver_no_next)
+    print(f"    Trường hợp không thấy nút: {next_url_none}")
+    assert next_url_none is None
+
+    print("    [✓] Đạt chuẩn (PASSED)")
+
     print("\n==================================================")
     print("   TẤT CẢ CÁC BÀI KIỂM THỬ THÀNH CÔNG (SUCCESS)")
     print("==================================================")
 
 if __name__ == "__main__":
     run_tests()
+

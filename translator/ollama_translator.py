@@ -142,7 +142,7 @@ class OllamaTranslator(TranslatorEngine):
 
     def call_ollama_api(self, text: str, is_title: bool = False, source_lang: str = "zh", override_num_predict: Optional[int] = None) -> str:
         """
-        Gọi API Ollama Chat để dịch văn bản.
+        Gọi API Ollama Chat để dịch văn bản với cơ chế thử lại nếu lỗi kết nối/timeout.
         """
         system_instruction = self.build_system_prompt(source_lang, is_title)
 
@@ -169,10 +169,22 @@ class OllamaTranslator(TranslatorEngine):
             headers={"Content-Type": "application/json"}
         )
         
-        with urllib.request.urlopen(req, timeout=90) as response:
-            res_data = json.loads(response.read().decode("utf-8"))
-            self.last_done_reason = res_data.get("done_reason")
-            return res_data.get("message", {}).get("content", "").strip()
+        max_retries = 2
+        backoff_seconds = [3, 6]
+        
+        for attempt in range(max_retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=90) as response:
+                    res_data = json.loads(response.read().decode("utf-8"))
+                    self.last_done_reason = res_data.get("done_reason")
+                    return res_data.get("message", {}).get("content", "").strip()
+            except Exception as e:
+                if attempt < max_retries:
+                    wait_time = backoff_seconds[attempt]
+                    print(f"[WARN] Lỗi kết nối/timeout tới Ollama ({e}). Đang thử lại sau {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                raise e
 
     def translate_chunk_with_retry(self, chunk: str, chunk_index: int, total_chunks: int, progress_callback: Optional[Callable[[str], None]] = None, source_lang: str = "zh") -> str:
         """
@@ -307,10 +319,20 @@ class OllamaTranslator(TranslatorEngine):
                 trans_p = orig_p
             elif orig_p == trans_p or not trans_p or not trans_p.strip():
                 # Nếu đoạn dịch giống hệt đoạn gốc hoặc bị rỗng (chưa được dịch tí nào do lỗi cả chunk ở Tầng 1),
-                # không chạy dịch vá từng đoạn nữa để tiết kiệm thời gian chạy mô hình
-                p_failed = True
-                p_reason = "untranslated"
-                trans_p = orig_p
+                # tiến hành gọi mô hình để dịch riêng lẻ đoạn này
+                if progress_callback:
+                    progress_callback(f"[->] Phát hiện đoạn chưa được dịch hoặc bị rỗng ở Tầng 1. Tiến hành dịch riêng lẻ đoạn: '{orig_p[:30]}...'")
+                try:
+                    re_trans = self.call_ollama_api(orig_p, source_lang=source_lang)
+                except Exception:
+                    re_trans = orig_p
+                
+                if not re_trans or re_trans == orig_p or self.has_chinese_leak(re_trans):
+                    p_failed = True
+                    p_reason = "untranslated"
+                    trans_p = orig_p
+                else:
+                    trans_p = re_trans
             elif self.has_chinese_leak(trans_p):
                 if progress_callback:
                     progress_callback(f"[->] Phát hiện rò rỉ chữ Hán ở đoạn: '{trans_p[:30]}...'. Tiến hành dịch vá...")

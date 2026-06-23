@@ -17,11 +17,13 @@ from core.crawler_engine import download_chapters
 class MockParser(BaseSourceParser):
     def __init__(self, base_url: str):
         self.base_url = base_url
+        self.current_url = ""
 
     def build_chapter_url(self, story_id: int, chapter_id: int) -> str:
         return f"{self.base_url}/{story_id}/{chapter_id}"
 
     def get_html(self, driver: Any, url: str, is_first_request: bool = False) -> Optional[str]:
+        self.current_url = url
         return "chuan_html"
 
     def parse_chapter(self, html: str) -> Optional[Tuple[str, str, str]]:
@@ -29,6 +31,14 @@ class MockParser(BaseSourceParser):
 
     def is_valid_response(self, html: str) -> bool:
         return True
+
+    def get_next_chapter_url(self, driver: Any) -> Optional[str]:
+        import re
+        match = re.search(r"/(\d+)$", self.current_url)
+        if match:
+            next_id = int(match.group(1)) + 1
+            return f"https://mocksite.com/txt/123/{next_id}"
+        return "https://mocksite.com/txt/123/40755199"
 
 
 def run_tests():

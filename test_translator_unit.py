@@ -194,6 +194,58 @@ class TestOllamaTranslator(unittest.TestCase):
         self.assertEqual(len(report["failed_chunks"]), 1)
         self.assertEqual(report["failed_chunks"][0]["reason"], "output_truncated")
 
+    def test_translate_untranslated_tier2_fallback_success(self):
+        # Giả lập: Tầng 1 dịch lỗi (nhận bản gốc làm translated_chunk), 
+        # nhưng Tầng 2 dịch lại từng đoạn nhỏ thành công.
+        call_count = 0
+        def mock_call(text, is_title=False, source_lang="zh", override_num_predict=None):
+            nonlocal call_count
+            call_count += 1
+            if is_title:
+                return "Dịch Tiêu Đề"
+            if call_count == 2:  # Lượt Tầng 1 của chunk 1 (ném lỗi)
+                raise ValueError("Timeout error")
+            # Lượt Tầng 2 vá đoạn
+            return "Đoạn văn được dịch thành công ở Tầng 2"
+
+        self.translator.call_ollama_api = MagicMock(side_effect=mock_call)
+        self.translator.is_available = MagicMock(return_value=True)
+
+        text = (
+            "# Tiêu đề\n"
+            "Văn bản chưa dịch."
+        )
+        result = self.translator.translate(text)
+        
+        # Kết quả phải chứa bản dịch thành công ở Tầng 2
+        self.assertIn("Đoạn văn được dịch thành công ở Tầng 2", result)
+        self.assertEqual(len(self.translator.last_report["failed_chunks"]), 0)
+
+    def test_call_ollama_api_timeout_retry(self):
+        # Giả lập urllib.request.urlopen ném lỗi lần 1, thành công lần 2
+        import urllib.request
+        from unittest.mock import patch
+        
+        call_count = 0
+        
+        def mock_urlopen(req, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise TimeoutError("connection timed out")
+            import io
+            response = MagicMock()
+            response.__enter__.return_value = io.BytesIO('{"message": {"content": "Bản dịch thử"}, "done_reason": "stop"}'.encode("utf-8"))
+            return response
+            
+        # We patch urllib.request.urlopen
+        with patch('urllib.request.urlopen', side_effect=mock_urlopen):
+            # We patch time.sleep to avoid waiting in tests
+            with patch('time.sleep', return_value=None):
+                result = self.translator.call_ollama_api("Văn bản gốc")
+                self.assertEqual(result, "Bản dịch thử")
+                self.assertEqual(call_count, 2) # Verified retry was executed
+
     def test_config_schema(self):
         config = get_default_config()
         self.assertIn("translator", config)
