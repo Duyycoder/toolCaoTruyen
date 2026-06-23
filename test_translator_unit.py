@@ -53,7 +53,8 @@ class TestOllamaTranslator(unittest.TestCase):
     def test_translate_tier1_retry_success(self):
         # Giả lập: Lượt 1 dịch chunk bị leak chữ Trung, Lượt 2 dịch thành công sạch sẽ
         call_count = 0
-        def mock_call(text, is_title=False, source_lang="zh"):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             nonlocal call_count
             call_count += 1
             if is_title:
@@ -79,7 +80,8 @@ class TestOllamaTranslator(unittest.TestCase):
         # Giả lập: Chunk dịch bị rò rỉ kể cả sau retry, 
         # nhưng khi quét Tier 2 vá từng đoạn thì thành công không leak.
         call_count = 0
-        def mock_call(text, is_title=False, source_lang="zh"):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             nonlocal call_count
             call_count += 1
             if is_title:
@@ -104,7 +106,8 @@ class TestOllamaTranslator(unittest.TestCase):
 
     def test_translate_tier2_repair_fallback(self):
         # Giả lập: Kể cả sau khi vá đoạn ở Tier 2 vẫn bị rò rỉ chữ Trung
-        def mock_call(text, is_title=False, source_lang="zh"):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             if is_title:
                 return "Dịch Tiêu Đề"
             return "Rò rỉ chữ Hán hoài 奇迹种子魔法少女"
@@ -121,20 +124,20 @@ class TestOllamaTranslator(unittest.TestCase):
         
         # Kiểm tra xem văn bản được trả về sạch (không chứa cảnh báo chèn trong md) và lưu lỗi vào report
         self.assertNotIn("> ⚠️", result)
-        self.assertIn("Văn bản bị lỗi.", result)
+        self.assertIn("[[MISSING_CHUNK:1]]", result)
         
         report = self.translator.last_report
         self.assertEqual(report["total_chunks"], 1)
         self.assertEqual(len(report["failed_chunks"]), 1)
         self.assertEqual(report["failed_chunks"][0]["chunk_index"], 1)
-        self.assertEqual(report["failed_chunks"][0]["reason"], "leak sau cả 2 lớp")
+        self.assertEqual(report["failed_chunks"][0]["reason"], "leak")
 
     def test_translate_empty_chunk_fallback(self):
         self.translator.call_ollama_api = MagicMock(return_value="")
         self.translator.is_available = MagicMock(return_value=True)
         text = "Văn bản gốc tiếng Trung."
         result = self.translator.translate(text)
-        self.assertIn("Văn bản gốc tiếng Trung.", result)
+        self.assertIn("[[MISSING_CHUNK:1]]", result)
         self.assertEqual(len(self.translator.last_report["failed_chunks"]), 1)
 
     def test_has_chinese_leak(self):
@@ -146,7 +149,8 @@ class TestOllamaTranslator(unittest.TestCase):
     def test_translate_truncation_retry_success(self):
         # Lượt 1 bị truncated (done_reason == "length"), lượt 2 retry thành công
         call_count = 0
-        def mock_call(text, is_title=False, source_lang="zh", override_num_predict=None):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             nonlocal call_count
             call_count += 1
             if is_title:
@@ -172,7 +176,8 @@ class TestOllamaTranslator(unittest.TestCase):
 
     def test_translate_truncation_retry_fail(self):
         # Lượt 1 bị truncated, lượt 2 retry vẫn bị truncated -> thất bại với output_truncated
-        def mock_call(text, is_title=False, source_lang="zh", override_num_predict=None):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             if is_title:
                 return "Dịch Tiêu Đề"
             self.translator.last_done_reason = "length"
@@ -188,7 +193,7 @@ class TestOllamaTranslator(unittest.TestCase):
         result = self.translator.translate(text)
         
         # Phải trả về bản gốc và ghi nhận lỗi output_truncated
-        self.assertIn("Nội dung bị lỗi.", result)
+        self.assertIn("[[MISSING_CHUNK:1]]", result)
         report = self.translator.last_report
         self.assertEqual(report["total_chunks"], 1)
         self.assertEqual(len(report["failed_chunks"]), 1)
@@ -198,7 +203,8 @@ class TestOllamaTranslator(unittest.TestCase):
         # Giả lập: Tầng 1 dịch lỗi (nhận bản gốc làm translated_chunk), 
         # nhưng Tầng 2 dịch lại từng đoạn nhỏ thành công.
         call_count = 0
-        def mock_call(text, is_title=False, source_lang="zh", override_num_predict=None):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             nonlocal call_count
             call_count += 1
             if is_title:
@@ -291,7 +297,8 @@ class TestGeminiTranslator(unittest.TestCase):
 
     def test_translate_tier1_retry_success(self):
         call_count = 0
-        def mock_call(text, is_title=False, source_lang="zh", progress_callback=None):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             nonlocal call_count
             call_count += 1
             if is_title:
@@ -313,7 +320,8 @@ class TestGeminiTranslator(unittest.TestCase):
 
     def test_translate_tier2_repair_success(self):
         call_count = 0
-        def mock_call(text, is_title=False, source_lang="zh", progress_callback=None):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             nonlocal call_count
             call_count += 1
             if is_title:
@@ -337,7 +345,8 @@ class TestGeminiTranslator(unittest.TestCase):
         from translator.gemini_translator import GeminiSafetyBlockError
         
         # Giả lập: Gemini bị chặn nội dung (ném GeminiSafetyBlockError)
-        def mock_gemini_call(text, is_title=False, source_lang="zh", progress_callback=None):
+        def mock_gemini_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             if is_title:
                 return "Dịch Tiêu Đề"
             raise GeminiSafetyBlockError("Nội dung nhạy cảm")
@@ -366,7 +375,8 @@ class TestGeminiTranslator(unittest.TestCase):
         from translator.gemini_translator import GeminiSafetyBlockError
         
         # Giả lập: Gemini bị chặn nội dung
-        def mock_gemini_call(text, is_title=False, source_lang="zh", progress_callback=None):
+        def mock_gemini_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             if is_title:
                 return "Dịch Tiêu Đề"
             raise GeminiSafetyBlockError("Nội dung nhạy cảm")
@@ -388,7 +398,7 @@ class TestGeminiTranslator(unittest.TestCase):
         
         # Vì Ollama không khả dụng, đoạn đó sẽ bị giữ nguyên bản gốc mà không chèn cảnh báo md, và ghi vào report
         self.assertNotIn("> ⚠️", result)
-        self.assertIn("Nội dung bị chặn bởi Gemini.", result)
+        self.assertIn("[[MISSING_CHUNK:1]]", result)
         
         report = self.translator.last_report
         self.assertEqual(report["total_chunks"], 1)
@@ -408,7 +418,7 @@ class TestGeminiTranslator(unittest.TestCase):
         #   Fallback Ollama tốn nhiều thời gian (giả lập sleep 0.1s).
         # - Chunk 2 ("Chunk Two."): Gemini dịch thành công ngay lập tức.
         
-        def mock_gemini_call(text, is_title=False, source_lang="zh", progress_callback=None):
+        def mock_gemini_call(text, *args, **kwargs):
             if "Zero" in text:
                 return "Dịch Zero"
             elif "One" in text:
@@ -424,7 +434,7 @@ class TestGeminiTranslator(unittest.TestCase):
         mock_ollama = MagicMock()
         mock_ollama.is_available.return_value = True
         
-        def mock_ollama_translate(text, progress_callback=None, source_lang="zh"):
+        def mock_ollama_translate(text, *args, **kwargs):
             time.sleep(0.1)  # Giả lập độ trễ / tốn thời gian hơn
             if "One" in text:
                 return "Dịch One Fallback"
@@ -467,7 +477,8 @@ class TestGeminiTranslator(unittest.TestCase):
     def test_translate_truncation_retry_success(self):
         # Lượt 1 bị truncated (finishReason == "MAX_TOKENS"), lượt 2 retry thành công
         call_count = 0
-        def mock_call(text, is_title=False, source_lang="zh", progress_callback=None, override_max_tokens=None):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             nonlocal call_count
             call_count += 1
             if is_title:
@@ -492,7 +503,8 @@ class TestGeminiTranslator(unittest.TestCase):
 
     def test_translate_truncation_retry_fail(self):
         # Lượt 1 bị truncated, lượt 2 retry vẫn bị truncated -> thất bại với output_truncated
-        def mock_call(text, is_title=False, source_lang="zh", progress_callback=None, override_max_tokens=None):
+        def mock_call(text, *args, **kwargs):
+            is_title = kwargs.get("is_title", False)
             if is_title:
                 return "Dịch Tiêu Đề"
             self.translator.last_finish_reason = "MAX_TOKENS"
@@ -509,7 +521,7 @@ class TestGeminiTranslator(unittest.TestCase):
         )
         result = self.translator.translate(text)
         
-        self.assertIn("Nội dung bị lỗi.", result)
+        self.assertIn("[[MISSING_CHUNK:1]]", result)
         report = self.translator.last_report
         self.assertEqual(report["total_chunks"], 1)
         self.assertEqual(len(report["failed_chunks"]), 1)

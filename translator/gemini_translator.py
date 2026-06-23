@@ -6,6 +6,7 @@ import urllib.request
 import urllib.error
 from typing import List, Callable, Optional
 from .base import TranslatorEngine
+from .utils import get_sentence_count, get_sentences, get_context_before, get_context_after, retry_translate_paragraph
 
 class GeminiSafetyBlockError(Exception):
     pass
@@ -413,7 +414,9 @@ class GeminiTranslator(TranslatorEngine):
                 for op, tp in zip(orig_paras, trans_paras):
                     paragraph_mappings.append((op, tp, i))
             else:
-                paragraph_mappings.append(("\n\n".join(orig_paras), "\n\n".join(trans_paras), i))
+                # Mismatch! Tách dịch lại riêng từng đoạn orig_p lẻ
+                for op in orig_paras:
+                    paragraph_mappings.append((op, "", i))
 
         # Tầng 2: Quét toàn file sau ghép để vá rò rỉ từng đoạn
         if progress_callback:
@@ -434,94 +437,84 @@ class GeminiTranslator(TranslatorEngine):
             if chunk_statuses.get(chunk_index) == "truncated":
                 p_failed = True
                 p_reason = "output_truncated"
-                trans_p = orig_p
+                trans_p = f"[[MISSING_CHUNK:{chunk_index}]]"
                 p_status = "failed"
-
             # 2. Nếu đoạn gốc chỉ chứa ký tự đặc biệt/dấu câu (không có chữ hay số), giữ nguyên bản gốc và coi như dịch thành công
             elif not re.search(r"\w", orig_p):
                 trans_p = orig_p
-                p_status = "direct_success"
+            else:
+                # Kiểm tra xem có cần xử lý dịch vá đoạn này không
+                needs_repair = False
+                reason = ""
 
-            # 2. Nếu chưa được dịch ở Tầng 1 (giống hệt bản gốc hoặc bị rỗng)
-            elif orig_p == trans_p or not trans_p or not trans_p.strip():
-                if progress_callback:
-                    progress_callback(f"[INFO] Phát hiện đoạn chưa được dịch hoặc bị rỗng ở Tầng 1. Tiến hành dịch bằng Ollama...")
-                try:
-                    ollama_trans = self._get_ollama_fallback_translator()
-                    if ollama_trans and ollama_trans.is_available():
-                        re_trans = ollama_trans.translate(orig_p, progress_callback=progress_callback, source_lang=source_lang)
-                    else:
-                        raise ValueError("Ollama không khả dụng để fallback")
-                except Exception:
-                    re_trans = orig_p
+                if orig_p == trans_p or not trans_p or not trans_p.strip():
+                    needs_repair = True
+                    reason = "untranslated"
+                elif self.has_chinese_leak(trans_p):
+                    needs_repair = True
+                    reason = "leak"
+                elif get_sentence_count(trans_p) < get_sentence_count(orig_p):
+                    needs_repair = True
+                    reason = "content_missing"
 
-                if not re_trans or re_trans == orig_p or self.has_chinese_leak(re_trans):
-                    p_failed = True
-                    p_reason = "untranslated"
-                    trans_p = orig_p
-                    p_status = "failed"
-                else:
-                    trans_p = re_trans
-                    p_status = "fallback_success"
-
-            # 3. Nếu bị rò rỉ chữ Hán
-            elif self.has_chinese_leak(trans_p):
-                if progress_callback:
-                    progress_callback(f"[->] Phát hiện rò rỉ chữ Hán ở đoạn: '{trans_p[:30]}...'. Tiến hành dịch vá...")
-                
-                re_trans_success = False
-                try:
-                    re_trans = self.call_gemini_api(orig_p, source_lang=source_lang, progress_callback=progress_callback)
-                    if self.has_chinese_leak(re_trans):
+                if needs_repair:
+                    # Định nghĩa translate_fn sử dụng API Gemini, có fallback sang Ollama
+                    def translate_fn(text: str, temp: float, token_mult: float) -> str:
                         original_temp = self.temperature
-                        self.temperature = 0.05
+                        self.temperature = temp
                         try:
-                            re_trans = self.call_gemini_api(orig_p, source_lang=source_lang, progress_callback=progress_callback)
+                            override_tokens = int(4096 * token_mult) if token_mult > 1.0 else None
+                            return self.call_gemini_api(
+                                text,
+                                source_lang=source_lang,
+                                progress_callback=progress_callback,
+                                override_max_tokens=override_tokens
+                            )
+                        except Exception as gemini_err:
+                            is_safety = isinstance(gemini_err, GeminiSafetyBlockError)
+                            if progress_callback:
+                                if is_safety:
+                                    progress_callback("[INFO] Gemini từ chối dịch do chính sách nội dung, đang chuyển sang dịch bằng Ollama (local)...")
+                                else:
+                                    progress_callback(f"[INFO] Lỗi dịch bằng Gemini ({gemini_err}), đang chuyển sang dịch bằng Ollama (local)...")
+                            
+                            ollama_trans = self._get_ollama_fallback_translator()
+                            if ollama_trans and ollama_trans.is_available():
+                                original_ollama_temp = ollama_trans.temperature
+                                ollama_trans.temperature = temp
+                                try:
+                                    return ollama_trans.translate(text, progress_callback=progress_callback, source_lang=source_lang)
+                                finally:
+                                    ollama_trans.temperature = original_ollama_temp
+                            else:
+                                raise ValueError("Ollama fallback không khả dụng")
                         finally:
                             self.temperature = original_temp
-                    if not re_trans or not self.has_chinese_leak(re_trans):
-                        re_trans_success = True
-                        p_status = "direct_success"
-                except Exception as e:
-                    is_safety = isinstance(e, GeminiSafetyBlockError)
-                    if progress_callback:
-                        if is_safety:
-                            progress_callback(f"[INFO] Gemini từ chối vá đoạn do chính sách nội dung, đang chuyển sang vá bằng Ollama...")
-                        else:
-                            progress_callback(f"[INFO] Lỗi Gemini khi vá đoạn ({e}), đang chuyển sang vá bằng Ollama...")
-                    try:
-                        ollama_trans = self._get_ollama_fallback_translator()
-                        if ollama_trans and ollama_trans.is_available():
-                            re_trans = ollama_trans.translate(orig_p, progress_callback=progress_callback, source_lang=source_lang)
-                            if not re_trans or not self.has_chinese_leak(re_trans):
-                                re_trans_success = True
-                                p_status = "fallback_success"
-                        else:
-                            raise ValueError("Ollama không khả dụng để fallback")
-                    except Exception as ollama_err:
-                        re_trans = orig_p
-                        if progress_callback:
-                            progress_callback(f"[WARN] Fallback sang Ollama thất bại: {ollama_err}")
-                
-                if not re_trans or (not re_trans_success and self.has_chinese_leak(re_trans)):
-                    p_failed = True
-                    p_reason = "leak sau cả 2 lớp"
-                    trans_p = orig_p
-                    p_status = "failed"
+
+                    re_trans, is_ok = retry_translate_paragraph(
+                        orig_p=orig_p,
+                        reason=reason,
+                        translate_fn=translate_fn,
+                        has_chinese_leak_fn=self.has_chinese_leak,
+                        progress_callback=progress_callback,
+                        default_temp=self.temperature,
+                        temp_pass2=0.05,
+                        temp_pass3=0.05
+                    )
+
+                    if not is_ok:
+                        p_failed = True
+                        p_reason = reason
+                        trans_p = f"[[MISSING_CHUNK:{chunk_index}]]"
+                        p_status = "failed"
+                    else:
+                        trans_p = re_trans
+                        p_status = "fallback_success"
                 else:
-                    trans_p = re_trans
-                    if not re_trans_success:
+                    if chunk_statuses.get(chunk_index) == "fallback_success":
+                        p_status = "fallback_success"
+                    else:
                         p_status = "direct_success"
-                    if progress_callback:
-                        progress_callback(f"[SUCCESS] Vá thành công: '{re_trans[:30]}...'")
-            
-            # 4. Dịch thành công
-            else:
-                trans_p = trans_p
-                if chunk_statuses.get(chunk_index) == "fallback_success":
-                    p_status = "fallback_success"
-                else:
-                    p_status = "direct_success"
 
             # Tính vị trí ký tự bắt đầu đoạn lỗi trong file output
             title_offset = (len(translated_title) + 2) if translated_title else 0

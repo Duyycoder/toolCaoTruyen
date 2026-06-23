@@ -111,9 +111,9 @@ def run_tests():
     # 8. Sự kiện delay
     assert events[7]["event"] == "delay"
 
-    # 9. Tải chương 3 (ID 40755200) -> thất bại (không tồn tại) 3 lần
+    # 9. Tải chương 3 (ID 40755200) -> thất bại (không tồn tại) 10 lần
     idx = 8
-    for i in range(3):
+    for i in range(10):
         assert events[idx]["event"] == "before_download"
         assert events[idx]["chapter_id"] == 40755200
         idx += 1
@@ -130,7 +130,7 @@ def run_tests():
     # 11. Sự kiện hoàn tất
     assert events[idx]["event"] == "complete"
     assert events[idx]["successful_downloads"] == 2
-    assert events[idx]["total_attempted"] == 5  # 2 thành công + 3 lỗi thử lại
+    assert events[idx]["total_attempted"] == 12  # 2 thành công + 10 lỗi thử lại
 
     print("    [✓] Trình tự sự kiện đạt chuẩn (PASSED)")
 

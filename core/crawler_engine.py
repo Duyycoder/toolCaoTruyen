@@ -330,17 +330,18 @@ def download_chapters(
             # Trích xuất ID chỉ để phục vụ callback hiển thị
             current_chapter_id = extract_chapter_id_from_url(current_url, start_chapter_id)
 
-            # --- Vòng lặp thử lại cùng một URL (tối đa 3 lần) ---
+            # --- Vòng lặp thử lại cùng một URL (tối đa 10 lần) ---
+            MAX_PAGE_RETRIES = 10
             page_load_retry_count = 0
             load_success = False
             html = None
             result = None
 
-            while page_load_retry_count < 3:
+            while page_load_retry_count < MAX_PAGE_RETRIES:
                 total_attempted += 1
                 is_first = (total_attempted == 1)
 
-                retry_suffix = f" (thử lại {page_load_retry_count}/2)" if page_load_retry_count > 0 else ""
+                retry_suffix = f" (thử lại {page_load_retry_count}/{MAX_PAGE_RETRIES - 1})" if page_load_retry_count > 0 else ""
                 progress_callback({
                     "event": "before_download",
                     "chapter_id": current_chapter_id,
@@ -365,26 +366,26 @@ def download_chapters(
                         "event": "chapter_not_exist",
                         "chapter_id": current_chapter_id,
                         "consecutive_failures": page_load_retry_count,
-                        "max_failures": 3,
-                        "message": f"Chương không tồn tại hoặc lỗi mạng (thử lại {page_load_retry_count}/3)."
+                        "max_failures": MAX_PAGE_RETRIES,
+                        "message": f"Chương không tồn tại hoặc lỗi mạng (thử lại {page_load_retry_count}/{MAX_PAGE_RETRIES})."
                     })
                 else:
                     progress_callback({
                         "event": "chapter_empty",
                         "chapter_id": current_chapter_id,
                         "consecutive_failures": page_load_retry_count,
-                        "max_failures": 3,
-                        "message": f"Nội dung chương rỗng (thử lại {page_load_retry_count}/3)."
+                        "max_failures": MAX_PAGE_RETRIES,
+                        "message": f"Nội dung chương rỗng (thử lại {page_load_retry_count}/{MAX_PAGE_RETRIES})."
                     })
 
                 time.sleep(random.uniform(0.5, 1.5))
 
-            # --- Xử lý khi thất bại hoàn toàn 3 lần trên cùng 1 URL ---
+            # --- Xử lý khi thất bại hoàn toàn 10 lần trên cùng 1 URL ---
             if not load_success:
                 consecutive_failures += 1
                 progress_callback({
                     "event": "error",
-                    "message": f"[✗] Không thể tải chương ID {current_chapter_id} sau 3 lần thử."
+                    "message": f"[✗] Không thể tải chương ID {current_chapter_id} sau {MAX_PAGE_RETRIES} lần thử."
                 })
 
                 # CIRCUIT BREAKER TỔNG

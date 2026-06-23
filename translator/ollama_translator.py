@@ -5,6 +5,7 @@ import json
 import urllib.request
 from typing import List, Callable, Optional
 from .base import TranslatorEngine
+from .utils import get_sentence_count, get_sentences, get_context_before, get_context_after, retry_translate_paragraph
 
 class OllamaTranslator(TranslatorEngine):
     def __init__(
@@ -140,11 +141,20 @@ class OllamaTranslator(TranslatorEngine):
             system_instruction += "\nNote: This is the chapter title. Keep it short and preserve Markdown heading prefix."
         return system_instruction
 
-    def call_ollama_api(self, text: str, is_title: bool = False, source_lang: str = "zh", override_num_predict: Optional[int] = None) -> str:
+    def call_ollama_api(
+        self,
+        text: str,
+        is_title: bool = False,
+        source_lang: str = "zh",
+        override_num_predict: Optional[int] = None,
+        system_instruction: Optional[str] = None,
+        response_json: bool = False
+    ) -> str:
         """
         Gọi API Ollama Chat để dịch văn bản với cơ chế thử lại nếu lỗi kết nối/timeout.
         """
-        system_instruction = self.build_system_prompt(source_lang, is_title)
+        if system_instruction is None:
+            system_instruction = self.build_system_prompt(source_lang, is_title)
 
         num_predict = override_num_predict if override_num_predict is not None else self.num_predict
 
@@ -162,6 +172,8 @@ class OllamaTranslator(TranslatorEngine):
                 "num_predict": num_predict
             }
         }
+        if response_json:
+            payload["format"] = "json"
 
         req = urllib.request.Request(
             self.api_url,
@@ -298,7 +310,9 @@ class OllamaTranslator(TranslatorEngine):
                 for op, tp in zip(orig_paras, trans_paras):
                     paragraph_mappings.append((op, tp, i))
             else:
-                paragraph_mappings.append(("\n\n".join(orig_paras), "\n\n".join(trans_paras), i))
+                # Mismatch! Tách dịch lại riêng từng đoạn orig_p lẻ
+                for op in orig_paras:
+                    paragraph_mappings.append((op, "", i))
 
         # Tầng 2: Quét toàn file sau ghép để vá rò rỉ từng đoạn
         if progress_callback:
@@ -307,74 +321,85 @@ class OllamaTranslator(TranslatorEngine):
         repaired_paras = []
         failed_chunks_report = []
 
+        success_direct = 0
+        success_fallback = 0
+
         for orig_p, trans_p, chunk_index in paragraph_mappings:
             p_failed = False
             p_reason = ""
+            p_status = "direct_success"
 
             if chunk_statuses.get(chunk_index) == "truncated":
                 p_failed = True
                 p_reason = "output_truncated"
-                trans_p = orig_p
+                trans_p = f"[[MISSING_CHUNK:{chunk_index}]]"
+                p_status = "failed"
             elif not re.search(r"\w", orig_p):
                 trans_p = orig_p
-            elif orig_p == trans_p or not trans_p or not trans_p.strip():
-                # Nếu đoạn dịch giống hệt đoạn gốc hoặc bị rỗng (chưa được dịch tí nào do lỗi cả chunk ở Tầng 1),
-                # tiến hành gọi mô hình để dịch riêng lẻ đoạn này
-                if progress_callback:
-                    progress_callback(f"[->] Phát hiện đoạn chưa được dịch hoặc bị rỗng ở Tầng 1. Tiến hành dịch riêng lẻ đoạn: '{orig_p[:30]}...'")
-                try:
-                    re_trans = self.call_ollama_api(orig_p, source_lang=source_lang)
-                except Exception:
-                    re_trans = orig_p
-                
-                if not re_trans or re_trans == orig_p or self.has_chinese_leak(re_trans):
-                    p_failed = True
-                    p_reason = "untranslated"
-                    trans_p = orig_p
-                else:
-                    trans_p = re_trans
-            elif self.has_chinese_leak(trans_p):
-                if progress_callback:
-                    progress_callback(f"[->] Phát hiện rò rỉ chữ Hán ở đoạn: '{trans_p[:30]}...'. Tiến hành dịch vá...")
-                
-                try:
-                    re_trans = self.call_ollama_api(orig_p, source_lang=source_lang)
-                    if self.has_chinese_leak(re_trans):
-                        # Thử lại lần cuối ở nhiệt độ 0.02
+            else:
+                # Kiểm tra xem có cần xử lý dịch vá đoạn này không
+                needs_repair = False
+                reason = ""
+
+                if orig_p == trans_p or not trans_p or not trans_p.strip():
+                    needs_repair = True
+                    reason = "untranslated"
+                elif self.has_chinese_leak(trans_p):
+                    needs_repair = True
+                    reason = "leak"
+                elif get_sentence_count(trans_p) < get_sentence_count(orig_p):
+                    needs_repair = True
+                    reason = "content_missing"
+
+                if needs_repair:
+                    # Định nghĩa translate_fn sử dụng API Ollama
+                    def translate_fn(text: str, temp: float, token_mult: float) -> str:
                         original_temp = self.temperature
-                        self.temperature = 0.02
+                        self.temperature = temp
                         try:
-                            re_trans = self.call_ollama_api(orig_p, source_lang=source_lang)
+                            override_predict = int(self.num_predict * token_mult) if token_mult > 1.0 else None
+                            return self.call_ollama_api(text, source_lang=source_lang, override_num_predict=override_predict)
                         finally:
                             self.temperature = original_temp
-                except Exception:
-                    re_trans = orig_p
-                
-                if not re_trans or re_trans == orig_p or self.has_chinese_leak(re_trans):
-                    p_failed = True
-                    p_reason = "leak sau cả 2 lớp"
-                    trans_p = orig_p
-                    if progress_callback:
-                        progress_callback(f"[WARN] Vá thất bại, giữ nguyên bản gốc đoạn: '{orig_p[:30]}...'")
+
+                    re_trans, is_ok = retry_translate_paragraph(
+                        orig_p=orig_p,
+                        reason=reason,
+                        translate_fn=translate_fn,
+                        has_chinese_leak_fn=self.has_chinese_leak,
+                        progress_callback=progress_callback,
+                        default_temp=self.temperature,
+                        temp_pass2=0.02,
+                        temp_pass3=0.02
+                    )
+
+                    if not is_ok:
+                        p_failed = True
+                        p_reason = reason
+                        trans_p = f"[[MISSING_CHUNK:{chunk_index}]]"
+                        p_status = "failed"
+                    else:
+                        trans_p = re_trans
+                        p_status = "fallback_success"
                 else:
-                    trans_p = re_trans
-                    if progress_callback:
-                        progress_callback(f"[SUCCESS] Vá thành công: '{re_trans[:30]}...'")
-            else:
-                trans_p = trans_p
+                    p_status = "direct_success"
 
             # Tính vị trí ký tự bắt đầu đoạn lỗi trong file output
             title_offset = (len(translated_title) + 2) if translated_title else 0
             para_start_pos = len("\n\n".join(repaired_paras)) + (2 if repaired_paras else 0) + title_offset
 
             if p_failed:
-                chunk_statuses[chunk_index] = "failed"
                 failed_chunks_report.append({
                     "chunk_index": chunk_index,
                     "char_position_start": para_start_pos,
                     "reason": p_reason if p_reason else "leak sau cả 2 lớp",
                     "original_text_preview": orig_p[:60]
                 })
+
+            if p_status == "direct_success":
+                success_direct += 1
+            elif p_status == "fallback_success":
+                success_fallback += 1
 
             repaired_paras.append(trans_p)
 
@@ -386,15 +411,12 @@ class OllamaTranslator(TranslatorEngine):
         if progress_callback:
             progress_callback(f"[INFO] Hoàn thành dịch: thành công {success_paras}/{total_paras} đoạn, {failed_count} đoạn lỗi.")
 
-        # Compile report statistics
-        success_direct = sum(1 for status in chunk_statuses.values() if status == "direct_success")
-
         self.last_report = {
             "engine": "ollama",
             "total_chunks": total_chunks,
             "total_paras": total_paras,
             "success_direct": success_direct,
-            "success_fallback": 0,
+            "success_fallback": success_fallback,
             "failed_chunks": failed_chunks_report
         }
 

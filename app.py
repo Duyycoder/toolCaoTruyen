@@ -468,6 +468,10 @@ async def websocket_translate(websocket: WebSocket):
                     "total_paras": total_p,
                     "message": message
                 })
+                
+                # Chặn chuyển chương nếu có đoạn lỗi
+                if failed_p > 0:
+                    raise ValueError(f"Chương này có {failed_p} đoạn dịch lỗi chưa được khắc phục. Tiến trình dịch bị chặn.")
             except Exception as e:
                 await websocket.send_json({
                     "event": "file_error",
@@ -475,6 +479,7 @@ async def websocket_translate(websocket: WebSocket):
                     "file_name": file_name,
                     "message": f"[✗] Lỗi khi dịch: {str(e)}"
                 })
+                break
 
         listen_task.cancel()
 
