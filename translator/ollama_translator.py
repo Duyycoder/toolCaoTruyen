@@ -88,15 +88,13 @@ class OllamaTranslator(TranslatorEngine):
     def contains_chinese_leak(self, text: str, threshold_ratio: Optional[float] = None, min_chars: int = 5) -> bool:
         """
         Kiểm tra xem bản dịch có bị rò rỉ ký tự tiếng Trung hay không.
+        (Cơ chế Zero Tolerance: Chỉ cần 1 ký tự Hán là báo lỗi ngay lập tức)
         """
         if not text:
             return False
-        if threshold_ratio is None:
-            threshold_ratio = self.leak_threshold_ratio
             
         chinese_chars = self.chinese_char_pattern.findall(text)
-        count = len(chinese_chars)
-        if count >= min_chars and (count / len(text)) > threshold_ratio:
+        if len(chinese_chars) > 0:
             return True
         return False
 
