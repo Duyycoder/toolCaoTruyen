@@ -1,3 +1,3 @@
 @echo off
-rem Chuyển hướng người dùng sang file setup.bat mới để cài đặt toàn bộ hệ thống
+rem Chuyen huong nguoi dung sang file setup.bat de thiet lap
 call setup.bat

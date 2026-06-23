@@ -19,6 +19,51 @@ from core.crawler_engine import download_chapters
 
 app = FastAPI(title="Tool Cào Truyện Web UI")
 
+def sanitize_filename(name: str) -> str:
+    # Thay thế các ký tự cấm trên Windows bằng khoảng trắng
+    name = re.sub(r'[\\/*?:"<>|]', " ", name)
+    # Loại bỏ khoảng trắng thừa
+    name = re.sub(r'\s+', " ", name).strip()
+    return name
+
+async def translate_filename_fn(filename: str, translator) -> str:
+    base_name, ext = os.path.splitext(filename)
+    if ext.lower() != ".md":
+        return filename
+        
+    # Tìm prefix số (ví dụ: "0001_", "1.", "Chương 1 - ")
+    match = re.match(r"^(\d+[_.-]?\s*|Chapter\s*\d+[_.-]?\s*|Chương\s*\d+[_.-]?\s*)(.*)$", base_name, re.IGNORECASE)
+    if match:
+        prefix = match.group(1)
+        title_to_translate = match.group(2).strip()
+    else:
+        prefix = ""
+        title_to_translate = base_name.strip()
+        
+    if not title_to_translate:
+        return filename
+        
+    try:
+        # Dịch nhanh tiêu đề bằng translator. Chạy đồng bộ trong thread pool.
+        translated = await asyncio.to_thread(translator.translate, title_to_translate)
+        # Loại bỏ các tag cảnh báo nếu có
+        translated = re.sub(r"> ⚠️ \[Đoạn này AI dịch không thành công.*\]", "", translated).strip()
+        # Loại bỏ các dòng trống hoặc dòng bắt đầu bằng >
+        translated_lines = []
+        for line in translated.split("\n"):
+            line = line.strip()
+            if line and not line.startswith(">"):
+                translated_lines.append(line)
+        translated = " ".join(translated_lines)
+        
+        sanitized = sanitize_filename(translated)
+        if sanitized:
+            return f"{prefix}{sanitized}{ext}"
+    except Exception as e:
+        print(f"[WARN] Không thể dịch tên file '{filename}': {e}")
+        
+    return filename
+
 class ConfigModel(BaseModel):
     base_url: str
     output_dir: str
@@ -295,6 +340,7 @@ async def websocket_translate(websocket: WebSocket):
         gemini_api_key = config.get("gemini_api_key", "")
         gemini_model = config.get("gemini_model", "gemini-2.5-flash")
         leak_threshold = int(config.get("leak_threshold_percent", 10))
+        output_dir_custom = config.get("output_dir", "").strip()
         
         # Thu thập danh sách file dịch
         files_to_translate = []
@@ -351,17 +397,34 @@ async def websocket_translate(websocket: WebSocket):
             if stopped:
                 break
                 
+            # Nghỉ 2.0s trước khi dịch file tiếp theo (ngoài file đầu tiên) để tránh spam API
+            if idx > 1:
+                await asyncio.sleep(2.0)
+                
             file_name = os.path.basename(file_path)
+            
+            # Dịch tên file
+            await websocket.send_json({
+                "event": "log",
+                "message": f"[->] Đang dịch tên file '{file_name}'..."
+            })
+            translated_file_name = await translate_filename_fn(file_name, translator)
+            if translated_file_name != file_name:
+                await websocket.send_json({
+                    "event": "log",
+                    "message": f"[✓] Tên file mới: '{translated_file_name}'"
+                })
+            
             await websocket.send_json({
                 "event": "file_start",
                 "index": idx,
-                "file_name": file_name,
-                "message": f"\n[***] Bắt đầu dịch file {idx}/{len(files_to_translate)}: {file_name}"
+                "file_name": translated_file_name,
+                "message": f"\n[***] Bắt đầu dịch file {idx}/{len(files_to_translate)}: {file_name} -> {translated_file_name}"
             })
 
             file_dir = os.path.dirname(file_path)
-            output_dir = os.path.join(file_dir, "dich")
-            output_path = os.path.join(output_dir, file_name)
+            output_dir = os.path.abspath(output_dir_custom) if output_dir_custom else os.path.join(file_dir, "dich")
+            output_path = os.path.join(output_dir, translated_file_name)
 
             try:
                 def run_translation_file():
@@ -385,7 +448,7 @@ async def websocket_translate(websocket: WebSocket):
                 await websocket.send_json({
                     "event": "file_success",
                     "index": idx,
-                    "file_name": file_name,
+                    "file_name": translated_file_name,
                     "output_path": output_path,
                     "success_paras": success_p,
                     "failed_paras": failed_p,

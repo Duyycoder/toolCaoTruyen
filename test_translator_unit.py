@@ -2,6 +2,7 @@ import os
 import unittest
 from unittest.mock import MagicMock
 from translator.ollama_translator import OllamaTranslator
+from translator.gemini_translator import GeminiTranslator
 from core.config_manager import get_default_config, load_config, save_full_config
 
 class TestOllamaTranslator(unittest.TestCase):
@@ -136,6 +137,135 @@ class TestOllamaTranslator(unittest.TestCase):
         loaded = load_config()
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded["translator"]["engine"], "ollama")
+
+class TestGeminiTranslator(unittest.TestCase):
+    def setUp(self):
+        self.translator = GeminiTranslator(
+            api_key="mock-key",
+            model="gemini-2.5-flash",
+            max_chunk_chars=100
+        )
+
+    def test_split_text_into_chunks(self):
+        self.translator.max_chunk_chars = 30
+        text = (
+            "Đoạn văn thứ nhất.\n\n"
+            "Đoạn văn thứ hai."
+        )
+        chunks = self.translator.split_text_into_chunks(text)
+        self.assertTrue(len(chunks) > 1)
+        reconstructed = "\n\n".join(chunks)
+        self.assertEqual(reconstructed.strip(), text.strip())
+
+    def test_contains_chinese_leak(self):
+        self.assertFalse(self.translator.contains_chinese_leak("Bản dịch hoàn toàn tiếng Việt."))
+        self.assertTrue(self.translator.contains_chinese_leak("Bản dịch chứa chữ 奇迹种子魔法少女 cực mạnh."))
+        self.assertFalse(self.translator.contains_chinese_leak("Chương 9: 魔法"))
+
+    def test_build_system_prompt(self):
+        prompt_zh = self.translator.build_system_prompt(source_lang="zh")
+        self.assertIn("Chinese", prompt_zh)
+
+    def test_translate_tier1_retry_success(self):
+        call_count = 0
+        def mock_call(text, is_title=False, source_lang="zh", progress_callback=None):
+            nonlocal call_count
+            call_count += 1
+            if is_title:
+                return "Dịch Tiêu Đề"
+            if call_count == 2:  # Lượt 1 của chunk 1
+                return "Bản dịch chứa 奇迹种子魔法少女"
+            return "Bản dịch tiếng Việt hoàn hảo."
+
+        self.translator.call_gemini_api = MagicMock(side_effect=mock_call)
+        self.translator.is_available = MagicMock(return_value=True)
+
+        text = (
+            "# Tiêu đề\n"
+            "Nội dung cần dịch."
+        )
+        result = self.translator.translate(text)
+        self.assertEqual(self.translator.call_gemini_api.call_count, 3)
+        self.assertIn("Bản dịch tiếng Việt hoàn hảo.", result)
+
+    def test_translate_tier2_repair_success(self):
+        call_count = 0
+        def mock_call(text, is_title=False, source_lang="zh", progress_callback=None):
+            nonlocal call_count
+            call_count += 1
+            if is_title:
+                return "Dịch Tiêu Đề"
+            if call_count <= 3:  # Lượt 1 và Lượt 2 retry của chunk 1
+                return "Bản dịch bị rò rỉ chữ Trung 奇迹种子魔法少女"
+            return "Đoạn văn đã được vá sạch sẽ."
+
+        self.translator.call_gemini_api = MagicMock(side_effect=mock_call)
+        self.translator.is_available = MagicMock(return_value=True)
+
+        text = (
+            "# Tiêu đề\n"
+            "Một đoạn văn."
+        )
+        result = self.translator.translate(text)
+        self.assertIn("Đoạn văn đã được vá sạch sẽ.", result)
+        self.assertNotIn("> ⚠️", result)
+
+    def test_translate_fallback_to_ollama_success(self):
+        from translator.gemini_translator import GeminiSafetyBlockError
+        
+        # Giả lập: Gemini bị chặn nội dung (ném GeminiSafetyBlockError)
+        def mock_gemini_call(text, is_title=False, source_lang="zh", progress_callback=None):
+            if is_title:
+                return "Dịch Tiêu Đề"
+            raise GeminiSafetyBlockError("Nội dung nhạy cảm")
+            
+        self.translator.call_gemini_api = MagicMock(side_effect=mock_gemini_call)
+        self.translator.is_available = MagicMock(return_value=True)
+        
+        # Giả lập Ollama khả dụng và dịch thành công
+        mock_ollama = MagicMock()
+        mock_ollama.is_available.return_value = True
+        mock_ollama.translate.return_value = "Bản dịch từ Ollama thành công."
+        
+        self.translator._get_ollama_fallback_translator = MagicMock(return_value=mock_ollama)
+        
+        text = (
+            "# Tiêu đề\n"
+            "Nội dung bị chặn bởi Gemini."
+        )
+        result = self.translator.translate(text)
+        
+        self.assertIn("Bản dịch từ Ollama thành công.", result)
+        self.assertNotIn("> ⚠️", result)
+        mock_ollama.translate.assert_called_once()
+
+    def test_translate_fallback_to_ollama_fail(self):
+        from translator.gemini_translator import GeminiSafetyBlockError
+        
+        # Giả lập: Gemini bị chặn nội dung
+        def mock_gemini_call(text, is_title=False, source_lang="zh", progress_callback=None):
+            if is_title:
+                return "Dịch Tiêu Đề"
+            raise GeminiSafetyBlockError("Nội dung nhạy cảm")
+            
+        self.translator.call_gemini_api = MagicMock(side_effect=mock_gemini_call)
+        self.translator.is_available = MagicMock(return_value=True)
+        
+        # Giả lập Ollama không khả dụng (hoặc lỗi khi dịch)
+        mock_ollama = MagicMock()
+        mock_ollama.is_available.return_value = False
+        
+        self.translator._get_ollama_fallback_translator = MagicMock(return_value=mock_ollama)
+        
+        text = (
+            "# Tiêu đề\n"
+            "Nội dung bị chặn bởi Gemini."
+        )
+        result = self.translator.translate(text)
+        
+        # Vì Ollama không khả dụng, đoạn đó sẽ bị giữ nguyên bản gốc kèm cảnh báo lỗi
+        self.assertIn("> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]", result)
+        self.assertIn("Nội dung bị chặn bởi Gemini.", result)
 
 if __name__ == "__main__":
     unittest.main()

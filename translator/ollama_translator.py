@@ -235,7 +235,12 @@ class OllamaTranslator(TranslatorEngine):
         failed_count = 0
 
         for orig_p, trans_p in paragraph_mappings:
-            if self.contains_chinese_leak(trans_p):
+            if orig_p == trans_p:
+                # Nếu đoạn dịch giống hệt đoạn gốc (chưa được dịch tí nào do lỗi cả chunk ở Tầng 1),
+                # không chạy dịch vá từng đoạn nữa để tiết kiệm thời gian chạy mô hình
+                failed_count += 1
+                repaired_paras.append(f"> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n{orig_p}")
+            elif self.contains_chinese_leak(trans_p):
                 if progress_callback:
                     progress_callback(f"[->] Phát hiện rò rỉ chữ Hán ở đoạn: '{trans_p[:30]}...'. Tiến hành dịch vá...")
                 

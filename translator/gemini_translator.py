@@ -1,9 +1,14 @@
 import os
 import re
+import time
 import json
 import urllib.request
-from typing import Callable, Optional
+import urllib.error
+from typing import List, Callable, Optional
 from .base import TranslatorEngine
+
+class GeminiSafetyBlockError(Exception):
+    pass
 
 class GeminiTranslator(TranslatorEngine):
     def __init__(
@@ -11,19 +16,57 @@ class GeminiTranslator(TranslatorEngine):
         api_key: str = "",
         model: str = "gemini-2.5-flash",
         temperature: float = 0.2,
+        max_chunk_chars: int = 1000,
         leak_threshold_percent: float = 10.0
     ):
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        self.max_chunk_chars = max_chunk_chars
         self.leak_threshold_ratio = leak_threshold_percent / 100.0
         self.chinese_char_pattern = re.compile(r"[\u4e00-\u9fff]")
+        self.last_request_time = 0.0
 
     def is_available(self) -> bool:
         """
         Kiểm tra xem API Key của Gemini đã được cấu hình hay chưa.
         """
         return bool(self.api_key and self.api_key.strip())
+
+    def split_text_into_chunks(self, text: str) -> List[str]:
+        """
+        Chia văn bản thành các chunk nhỏ hơn dựa trên ranh giới đoạn văn (\n\n).
+        """
+        paragraphs = text.split("\n\n")
+        chunks = []
+        current_chunk = []
+        current_length = 0
+
+        for para in paragraphs:
+            para_len = len(para)
+            if not para.strip():
+                continue
+            
+            if para_len > self.max_chunk_chars:
+                if current_chunk:
+                    chunks.append("\n\n".join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                chunks.append(para)
+                continue
+
+            if current_length + para_len + 2 > self.max_chunk_chars:
+                chunks.append("\n\n".join(current_chunk))
+                current_chunk = [para]
+                current_length = para_len
+            else:
+                current_chunk.append(para)
+                current_length += para_len + 2
+
+        if current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+
+        return chunks
 
     def contains_chinese_leak(self, text: str, threshold_ratio: Optional[float] = None, min_chars: int = 5) -> bool:
         """
@@ -66,9 +109,32 @@ class GeminiTranslator(TranslatorEngine):
             system_instruction += "\nNote: This is the chapter title. Keep it short and preserve Markdown heading prefix."
         return system_instruction
 
-    def call_gemini_api(self, text: str, is_title: bool = False, source_lang: str = "zh") -> str:
+    def _execute_api_call(self, url: str, payload: dict) -> str:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=90) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            candidates = res_data.get("candidates", [])
+            if candidates:
+                # Kiểm tra finishReason
+                finish_reason = candidates[0].get("finishReason", "")
+                if finish_reason in ("SAFETY", "PROHIBITED_CONTENT"):
+                    raise GeminiSafetyBlockError("Nội dung bị Gemini từ chối do chính sách an toàn")
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "").strip()
+            
+            prompt_feedback = res_data.get("promptFeedback", {})
+            if prompt_feedback and prompt_feedback.get("blockReason"):
+                raise GeminiSafetyBlockError(f"Nội dung bị Gemini từ chối do chính sách an toàn ({prompt_feedback.get('blockReason')})")
+            raise ValueError(f"Gemini API trả về kết quả trống: {res_data}")
+
+    def call_gemini_api(self, text: str, is_title: bool = False, source_lang: str = "zh", progress_callback: Optional[Callable[[str], None]] = None) -> str:
         """
-        Gọi API Gemini v1beta để sinh bản dịch.
+        Gọi API Gemini v1beta để sinh bản dịch với cơ chế tự động thử lại nếu gặp lỗi 429/503.
         """
         if not self.is_available():
             raise ValueError("Gemini API key chưa được cấu hình.")
@@ -93,31 +159,116 @@ class GeminiTranslator(TranslatorEngine):
             "generationConfig": {
                 "temperature": self.temperature,
                 "maxOutputTokens": 4096
-            }
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+            ]
         }
 
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
+        max_retries = 3
+        backoff_seconds = [6, 12, 24]
 
+        for attempt in range(max_retries + 1):
+            # Enforce request spacing delay (at least 5.0 seconds between consecutive requests)
+            elapsed = time.time() - self.last_request_time
+            if elapsed < 5.0:
+                time.sleep(5.0 - elapsed)
+            self.last_request_time = time.time()
+
+            try:
+                return self._execute_api_call(url, payload)
+            except urllib.error.HTTPError as e:
+                # 1. Lỗi 400 (Bad Request): parse error.message từ response
+                if e.code == 400:
+                    try:
+                        err_body = e.read().decode("utf-8")
+                        err_json = json.loads(err_body)
+                        err_msg = err_json.get("error", {}).get("message", "Unknown Bad Request")
+                    except Exception:
+                        err_msg = "Unknown Bad Request"
+                    raise ValueError(f"Lỗi định dạng yêu cầu gửi tới Gemini: {err_msg}")
+                
+                # 2. Lỗi 429 (Rate Limit) hoặc 503 (High Demand/Unavailable)
+                if e.code in (429, 503) and attempt < max_retries:
+                    wait_time = backoff_seconds[attempt]
+                    # Trích xuất thời gian chờ từ header "Retry-After" nếu có
+                    retry_after = e.headers.get("Retry-After")
+                    if retry_after and retry_after.isdigit():
+                        wait_time = int(retry_after)
+                    
+                    log_msg = f"[WARN] Đã vượt giới hạn tốc độ miễn phí, đang chờ {wait_time}s để thử lại..."
+                    if progress_callback:
+                        progress_callback(log_msg)
+                    else:
+                        print(log_msg)
+                    
+                    time.sleep(wait_time)
+                    continue
+
+                try:
+                    err_body = e.read().decode("utf-8")
+                except Exception:
+                    err_body = str(e)
+                raise ValueError(f"Lỗi HTTP {e.code} từ Gemini API: {err_body}")
+            except Exception as e:
+                if isinstance(e, GeminiSafetyBlockError):
+                    raise e
+                if isinstance(e, ValueError) and "Lỗi định dạng yêu cầu" in str(e):
+                    raise e
+                # Các lỗi kết nối khác
+                if attempt < max_retries:
+                    wait_time = backoff_seconds[attempt]
+                    log_msg = f"[WARN] Lỗi kết nối ({e}), đang chờ {wait_time}s để thử lại..."
+                    if progress_callback:
+                        progress_callback(log_msg)
+                    else:
+                        print(log_msg)
+                    time.sleep(wait_time)
+                    continue
+                raise e
+
+    def translate_chunk_with_retry(self, chunk: str, chunk_index: int, total_chunks: int, progress_callback: Optional[Callable[[str], None]] = None, source_lang: str = "zh") -> str:
+        """
+        Dịch một chunk văn bản, thử lại tối đa 1 lần nếu phát hiện rò rỉ chữ Trung Quốc vượt ngưỡng.
+        """
+        output = self.call_gemini_api(chunk, source_lang=source_lang, progress_callback=progress_callback)
+        
+        if self.contains_chinese_leak(output):
+            warn_msg = f"[WARN] Phát hiện rò rỉ chữ Trung ở chunk {chunk_index} ({len(self.chinese_char_pattern.findall(output))} ký tự). Tiến hành dịch lại ở nhiệt độ thấp hơn..."
+            if progress_callback:
+                progress_callback(warn_msg)
+            
+            original_temp = self.temperature
+            self.temperature = 0.05
+            try:
+                output = self.call_gemini_api(chunk, source_lang=source_lang, progress_callback=progress_callback)
+            finally:
+                self.temperature = original_temp
+
+        return output
+
+    def _get_ollama_fallback_translator(self) -> Optional[TranslatorEngine]:
         try:
-            with urllib.request.urlopen(req, timeout=90) as response:
-                res_data = json.loads(response.read().decode("utf-8"))
-                candidates = res_data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        return parts[0].get("text", "").strip()
-                raise ValueError(f"Gemini API trả về kết quả trống: {res_data}")
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8")
-            raise ValueError(f"Lỗi HTTP {e.code} từ Gemini API: {err_body}")
+            from core.config_manager import load_config
+            from .ollama_translator import OllamaTranslator
+            config = load_config()
+            if config and "translator" in config:
+                ollama_model = config["translator"].get("ollama_model", "qwen2.5:7b-instruct")
+                leak_threshold = config["translator"].get("leak_threshold_percent", 10)
+                return OllamaTranslator(
+                    model=ollama_model,
+                    leak_threshold_percent=leak_threshold
+                )
+        except Exception:
+            pass
+        return None
 
     def translate(self, text: str, progress_callback: Optional[Callable[[str], None]] = None, source_lang: str = "zh") -> str:
         """
-        Dịch toàn bộ văn bản bằng Gemini API.
+        Dịch toàn bộ văn bản (bao gồm tiêu đề và thân bài) sử dụng cơ chế chunking 2 tầng tương tự Ollama.
         """
         if not self.is_available():
             err_msg = "Gemini API Key chưa được cấu hình. Vui lòng nhập API Key trong phần Cấu hình."
@@ -138,7 +289,20 @@ class GeminiTranslator(TranslatorEngine):
             if progress_callback:
                 progress_callback("[->] Đang dịch tiêu đề chương bằng Gemini...")
             try:
-                translated_title = self.call_gemini_api(title_line, is_title=True, source_lang=source_lang)
+                translated_title = self.call_gemini_api(title_line, is_title=True, source_lang=source_lang, progress_callback=progress_callback)
+            except GeminiSafetyBlockError:
+                if progress_callback:
+                    progress_callback("[INFO] Gemini từ chối dịch tiêu đề do chính sách nội dung, đang chuyển sang dịch bằng Ollama (local)...")
+                try:
+                    ollama_trans = self._get_ollama_fallback_translator()
+                    if ollama_trans and ollama_trans.is_available():
+                        translated_title = ollama_trans.translate(title_line, progress_callback=progress_callback, source_lang=source_lang)
+                    else:
+                        raise ValueError("Ollama không khả dụng để fallback (chưa chạy hoặc thiếu model)")
+                except Exception as ollama_err:
+                    translated_title = title_line
+                    if progress_callback:
+                        progress_callback(f"[WARN] Fallback sang Ollama thất bại: {ollama_err}. Giữ nguyên gốc.")
             except Exception as e:
                 translated_title = title_line
                 if progress_callback:
@@ -147,76 +311,124 @@ class GeminiTranslator(TranslatorEngine):
         if progress_callback:
             progress_callback("[->] Đang gửi nội dung tới Gemini API...")
 
-        # Với Gemini, ta chia chunk lớn hơn (khoảng 4000 ký tự) để đảm bảo không bị quá tải token sinh
-        paragraphs = body_text.split("\n\n")
-        chunks = []
-        current_chunk = []
-        current_length = 0
-        for para in paragraphs:
-            if not para.strip():
-                continue
-            if current_length + len(para) + 2 > 4000:
-                chunks.append("\n\n".join(current_chunk))
-                current_chunk = [para]
-                current_length = len(para)
-            else:
-                current_chunk.append(para)
-                current_length += len(para) + 2
-        if current_chunk:
-            chunks.append("\n\n".join(current_chunk))
-
-        translated_chunks = []
+        chunks = self.split_text_into_chunks(body_text)
         total_chunks = len(chunks)
-        failed_count = 0
+        paragraph_mappings = []
 
+        # Tầng 1: Dịch từng chunk (có retry)
         for i, chunk in enumerate(chunks, 1):
+            orig_paras = [p.strip() for p in chunk.split("\n\n") if p.strip()]
             if progress_callback and total_chunks > 1:
                 progress_callback(f"[->] Đang dịch phần {i}/{total_chunks}...")
             
             try:
-                output = self.call_gemini_api(chunk, source_lang=source_lang)
-                if self.contains_chinese_leak(output):
-                    if progress_callback:
-                        progress_callback(f"[WARN] Phát hiện rò rỉ chữ Trung từ Gemini ở phần {i}. Thử dịch lại ở nhiệt độ thấp...")
-                    orig_temp = self.temperature
-                    self.temperature = 0.05
-                    try:
-                        output = self.call_gemini_api(chunk, source_lang=source_lang)
-                    finally:
-                        self.temperature = orig_temp
-                
-                # Quét và xử lý rò rỉ sau retry
-                if self.contains_chinese_leak(output):
-                    chunk_orig_paras = [p.strip() for p in chunk.split("\n\n") if p.strip()]
-                    chunk_trans_paras = [p.strip() for p in output.split("\n\n") if p.strip()]
-                    if len(chunk_orig_paras) == len(chunk_trans_paras):
-                        repaired = []
-                        for op, tp in zip(chunk_orig_paras, chunk_trans_paras):
-                            if self.contains_chinese_leak(tp):
-                                repaired.append(f"> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n{op}")
-                                failed_count += 1
-                            else:
-                                repaired.append(tp)
-                        output = "\n\n".join(repaired)
-                    else:
-                        failed_count += 1
-                        output = f"> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n{chunk}"
-                
-                translated_chunks.append(output)
-            except Exception as e:
-                failed_count += 1
+                translated_chunk = self.translate_chunk_with_retry(
+                    chunk, i, total_chunks, progress_callback, source_lang=source_lang
+                )
+            except GeminiSafetyBlockError:
                 if progress_callback:
-                    progress_callback(f"[ERROR] Lỗi dịch phần {i}: {e}")
-                translated_chunks.append(f"> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n{chunk}")
+                    progress_callback(f"[INFO] Gemini từ chối dịch phần {i} do chính sách nội dung, đang chuyển sang dịch bằng Ollama (local) cho đoạn này...")
+                try:
+                    ollama_trans = self._get_ollama_fallback_translator()
+                    if ollama_trans and ollama_trans.is_available():
+                        translated_chunk = ollama_trans.translate(chunk, progress_callback=progress_callback, source_lang=source_lang)
+                    else:
+                        raise ValueError("Ollama không khả dụng để fallback (chưa chạy hoặc thiếu model)")
+                except Exception as ollama_err:
+                    if progress_callback:
+                        progress_callback(f"[WARN] Fallback sang Ollama thất bại: {ollama_err}. Giữ nguyên bản gốc để vá ở Tầng 2.")
+                    translated_chunk = chunk
+            except Exception as e:
+                if progress_callback:
+                    progress_callback(f"[WARN] Lỗi dịch chunk {i}: {e}. Giữ nguyên bản gốc để vá ở Tầng 2.")
+                translated_chunk = chunk
 
-        translated_body = "\n\n".join(translated_chunks)
-        
+            trans_paras = [p.strip() for p in translated_chunk.split("\n\n") if p.strip()]
+            
+            if len(orig_paras) == len(trans_paras):
+                paragraph_mappings.extend(list(zip(orig_paras, trans_paras)))
+            else:
+                paragraph_mappings.append(("\n\n".join(orig_paras), "\n\n".join(trans_paras)))
+
+        # Tầng 2: Quét toàn file sau ghép để vá rò rỉ từng đoạn
         if progress_callback:
-            progress_callback(f"[INFO] Hoàn thành dịch bằng Gemini: dịch xong {total_chunks - failed_count}/{total_chunks} phần.")
+            progress_callback("[->] Đang quét lại toàn bộ văn bản (Tầng 2) để sửa lỗi rò rỉ ranh giới...")
+
+        repaired_paras = []
+        failed_count = 0
+
+        for orig_p, trans_p in paragraph_mappings:
+            if orig_p == trans_p:
+                # Nếu đoạn dịch giống hệt đoạn gốc (chưa được dịch tí nào do lỗi cả chunk ở Tầng 1),
+                # thử dịch lại bằng Ollama
+                if progress_callback:
+                    progress_callback(f"[INFO] Phát hiện đoạn chưa được dịch ở Tầng 1. Tiến hành dịch bằng Ollama...")
+                try:
+                    ollama_trans = self._get_ollama_fallback_translator()
+                    if ollama_trans and ollama_trans.is_available():
+                        re_trans = ollama_trans.translate(orig_p, progress_callback=progress_callback, source_lang=source_lang)
+                    else:
+                        raise ValueError("Ollama không khả dụng để fallback")
+                except Exception:
+                    re_trans = orig_p
+
+                if re_trans == orig_p or self.contains_chinese_leak(re_trans):
+                    failed_count += 1
+                    repaired_paras.append(f"> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n{orig_p}")
+                else:
+                    repaired_paras.append(re_trans)
+            elif self.contains_chinese_leak(trans_p):
+                if progress_callback:
+                    progress_callback(f"[->] Phát hiện rò rỉ chữ Hán ở đoạn: '{trans_p[:30]}...'. Tiến hành dịch vá...")
+                
+                try:
+                    re_trans = self.call_gemini_api(orig_p, source_lang=source_lang, progress_callback=progress_callback)
+                    if self.contains_chinese_leak(re_trans):
+                        original_temp = self.temperature
+                        self.temperature = 0.05
+                        try:
+                            re_trans = self.call_gemini_api(orig_p, source_lang=source_lang, progress_callback=progress_callback)
+                        finally:
+                            self.temperature = original_temp
+                except GeminiSafetyBlockError:
+                    if progress_callback:
+                        progress_callback(f"[INFO] Gemini từ chối vá đoạn do chính sách nội dung, đang chuyển sang vá bằng Ollama...")
+                    try:
+                        ollama_trans = self._get_ollama_fallback_translator()
+                        if ollama_trans and ollama_trans.is_available():
+                            re_trans = ollama_trans.translate(orig_p, progress_callback=progress_callback, source_lang=source_lang)
+                        else:
+                            raise ValueError("Ollama không khả dụng để fallback")
+                    except Exception as ollama_err:
+                        re_trans = orig_p
+                        if progress_callback:
+                            progress_callback(f"[WARN] Fallback sang Ollama thất bại: {ollama_err}")
+                except Exception:
+                    re_trans = orig_p
+                
+                if self.contains_chinese_leak(re_trans):
+                    failed_count += 1
+                    repaired_paras.append(f"> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n{orig_p}")
+                    if progress_callback:
+                        progress_callback(f"[WARN] Vá thất bại, giữ nguyên bản gốc đoạn: '{orig_p[:30]}...'")
+                else:
+                    repaired_paras.append(re_trans)
+                    if progress_callback:
+                        progress_callback(f"[SUCCESS] Vá thành công: '{re_trans[:30]}...'")
+            else:
+                repaired_paras.append(trans_p)
+
+        translated_body = "\n\n".join(repaired_paras)
+        
+        total_paras = len(paragraph_mappings)
+        success_paras = total_paras - failed_count
+        if progress_callback:
+            progress_callback(f"[INFO] Hoàn thành dịch: thành công {success_paras}/{total_paras} đoạn, {failed_count} đoạn lỗi.")
 
         final_output = []
         if translated_title:
             final_output.append(translated_title)
+        
         final_output.append(translated_body)
         return "\n\n".join(final_output)
 
