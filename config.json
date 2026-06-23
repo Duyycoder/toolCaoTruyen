@@ -1,6 +1,6 @@
 {
   "base_url": "https://www.69shuba.com/txt",
-  "output_dir": "./truyen_tai_ve",
+  "output_dir": "C:\\Users\\ASUS\\Downloads\\TestTool",
   "source": "69shuba",
   "translator": {
     "engine": "ollama",
