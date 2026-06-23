@@ -17,6 +17,7 @@ class OllamaTranslator(TranslatorEngine):
         max_chunk_chars: int = 350,  # Benchmark optimal size
         leak_threshold_percent: float = 10.0
     ):
+        super().__init__()
         self.model = model
         self.api_url = api_url
         self.num_ctx = num_ctx
@@ -135,9 +136,59 @@ class OllamaTranslator(TranslatorEngine):
             "5. Output ONLY the translated Vietnamese text. Do not add comments, notes, or explanations.\n"
             f"6. If the input contains short questions, dialogues, or specific terms (e.g. '“对抗？”'), translate them fully into Vietnamese (e.g. '“Đối kháng?”') and do not write or copy any original {lang_name} characters in your output."
         )
+
+        if self.glossary:
+            glossary_text = "\n".join([f"- {k} -> {v}" for k, v in self.glossary.items()])
+            system_instruction += (
+                f"\n\nCRITICAL REQUIREMENT: You MUST strictly use the following Glossary for specific terms and names. "
+                f"Do not invent or use other translations for these terms:\n{glossary_text}\n"
+            )
+
         if is_title:
             system_instruction += "\nNote: This is the chapter title. Keep it short and preserve Markdown heading prefix."
         return system_instruction
+
+    def extract_glossary_from_text(self, text: str, current_glossary: dict) -> dict:
+        """
+        Trích xuất các danh từ riêng MỚI từ văn bản bằng Ollama.
+        """
+        prompt = (
+            "Dưới đây là một đoạn truyện tiên hiệp tiếng Trung.\n"
+            "Hãy phân tích và tìm ra tất cả các Tên nhân vật, Địa danh, Tên môn phái, Tuyệt chiêu, hoặc thuật ngữ riêng ĐÁNG CHÚ Ý xuất hiện trong đoạn.\n"
+            "Dịch chúng sang âm Hán Việt chuẩn xác (Ví dụ: 顾安 -> Cố An, 孟浪 -> Mạnh Lãng, 太玄门 -> Thái Huyền Môn).\n"
+        )
+        if current_glossary:
+            existing_keys = ", ".join(current_glossary.keys())
+            prompt += f"BỎ QUA và KHÔNG trích xuất lại các từ đã có trong danh sách sau: {existing_keys}.\n"
+        
+        prompt += (
+            "TRẢ VỀ DUY NHẤT một chuỗi JSON hợp lệ (không chứa markdown block ```json, chỉ bắt đầu bằng { và kết thúc bằng }). "
+            "Định dạng JSON: {\"Chữ Hán\": \"Bản dịch Hán Việt\"}.\n"
+            "Nếu không có từ mới nào đáng chú ý, hãy trả về JSON rỗng: {}\n\n"
+            "Đoạn truyện:\n"
+            f"{text[:1500]}"
+        )
+        
+        try:
+            res_text = self.call_ollama_api(
+                text=prompt,
+                system_instruction="You are a JSON data extractor. Output raw JSON only.",
+                response_json=True
+            )
+            # Dọn dẹp JSON
+            res_text = res_text.strip()
+            if res_text.startswith("```json"): res_text = res_text[7:]
+            if res_text.startswith("```"): res_text = res_text[3:]
+            if res_text.endswith("```"): res_text = res_text[:-3]
+            res_text = res_text.strip()
+            
+            data = json.loads(res_text)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            print(f"[Warning] Lỗi khi extract glossary (Ollama): {e}")
+            
+        return {}
 
     def call_ollama_api(
         self,
@@ -184,7 +235,7 @@ class OllamaTranslator(TranslatorEngine):
         
         for attempt in range(max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=90) as response:
+                with urllib.request.urlopen(req, timeout=600) as response:
                     res_data = json.loads(response.read().decode("utf-8"))
                     self.last_done_reason = res_data.get("done_reason")
                     return res_data.get("message", {}).get("content", "").strip()
