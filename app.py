@@ -428,22 +428,35 @@ async def websocket_translate(websocket: WebSocket):
 
             try:
                 def run_translation_file():
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        text = f.read()
+                    translator.translate_file(file_path, output_path, progress_callback=ws_log_callback)
                     
-                    translated = translator.translate(text, progress_callback=ws_log_callback)
-                    
-                    os.makedirs(output_dir, exist_ok=True)
-                    with open(output_path, "w", encoding="utf-8") as f:
-                        f.write(translated)
-                    
-                    # Trích xuất thống kê
-                    total_p = len([p for p in re.split(r"\n\n", text) if p.strip()])
-                    failed_p = len(re.findall(r"> ⚠️ \[Đoạn này AI dịch không thành công", translated))
+                    report = getattr(translator, "last_report", {})
+                    failed_chunks = report.get("failed_chunks", [])
+                    failed_p = len(failed_chunks)
+                    total_p = report.get("total_paras", 0)
+                    success_fallback = report.get("success_fallback", 0)
                     success_p = max(0, total_p - failed_p)
-                    return success_p, failed_p, total_p
+                    
+                    return success_p, failed_p, total_p, success_fallback
 
-                success_p, failed_p, total_p = await asyncio.to_thread(run_translation_file)
+                success_p, failed_p, total_p, success_fallback = await asyncio.to_thread(run_translation_file)
+                
+                input_base = os.path.splitext(os.path.basename(file_path))[0]
+                report_path = os.path.join(output_dir, f"{input_base}.translation_report.json")
+                report_base = f"{input_base}.translation_report.json"
+                
+                if failed_p > 0 or success_fallback > 0:
+                    message = (
+                        f"[WARN] Bản dịch được lưu tại: {output_path}\n"
+                        f"[WARN] Kết quả: Thành công {success_p}/{total_p} đoạn. Có {failed_p} đoạn lỗi, {success_fallback} đoạn fallback.\n"
+                        f"[WARN] File báo cáo chi tiết: {report_base}\n"
+                        f"[WARN] Đường dẫn: {report_path}"
+                    )
+                else:
+                    message = (
+                        f"[✓] Bản dịch đã được lưu tại: {output_path}\n"
+                        f"[✓] Kết quả: Thành công {success_p}/{total_p} đoạn (100% thành công)."
+                    )
                 
                 await websocket.send_json({
                     "event": "file_success",
@@ -453,8 +466,7 @@ async def websocket_translate(websocket: WebSocket):
                     "success_paras": success_p,
                     "failed_paras": failed_p,
                     "total_paras": total_p,
-                    "message": f"[✓] Bản dịch đã được lưu tại: {output_path}\n"
-                               f"[✓] Kết quả: Thành công {success_p}/{total_p} đoạn, {failed_p} đoạn cần xem lại thủ công."
+                    "message": message
                 })
             except Exception as e:
                 await websocket.send_json({

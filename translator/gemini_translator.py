@@ -26,6 +26,7 @@ class GeminiTranslator(TranslatorEngine):
         self.leak_threshold_ratio = leak_threshold_percent / 100.0
         self.chinese_char_pattern = re.compile(r"[\u4e00-\u9fff]")
         self.last_request_time = 0.0
+        self.last_finish_reason = None
 
     def is_available(self) -> bool:
         """
@@ -56,7 +57,8 @@ class GeminiTranslator(TranslatorEngine):
                 continue
 
             if current_length + para_len + 2 > self.max_chunk_chars:
-                chunks.append("\n\n".join(current_chunk))
+                if current_chunk:
+                    chunks.append("\n\n".join(current_chunk))
                 current_chunk = [para]
                 current_length = para_len
             else:
@@ -83,6 +85,20 @@ class GeminiTranslator(TranslatorEngine):
             return True
         return False
 
+    def has_chinese_leak(self, text: str) -> bool:
+        """
+        Kiểm tra rò rỉ chữ Hán, có xử lý chống pha loãng đối với văn bản chứa nhiều đoạn (\n\n).
+        """
+        if not text:
+            return False
+        if "\n\n" in text:
+            sub_paras = [sp.strip() for sp in text.split("\n\n") if sp.strip()]
+            for sp in sub_paras:
+                if self.contains_chinese_leak(sp):
+                    return True
+            return False
+        return self.contains_chinese_leak(text)
+
     def build_system_prompt(self, source_lang: str, is_title: bool = False) -> str:
         """
         Xây dựng prompt chỉ dẫn dịch thuật động theo ngôn ngữ gốc.
@@ -103,7 +119,8 @@ class GeminiTranslator(TranslatorEngine):
             "2. Keep the original Markdown formatting (headings, blank lines) exactly as-is.\n"
             f"3. Translate names consistently (e.g. for Chinese names like 江思 to Giang Tư, 冰糖 to Băng Đường).\n"
             f"4. DO NOT leak or write any original non-Vietnamese characters in your output. Every sentence must be translated into Vietnamese.\n"
-            "5. Output ONLY the translated Vietnamese text. Do not add comments, notes, or explanations."
+            "5. Output ONLY the translated Vietnamese text. Do not add comments, notes, or explanations.\n"
+            f"6. If the input contains short questions, dialogues, or specific terms (e.g. '“对抗？”'), translate them fully into Vietnamese (e.g. '“Đối kháng?”') and do not write or copy any original {lang_name} characters in your output."
         )
         if is_title:
             system_instruction += "\nNote: This is the chapter title. Keep it short and preserve Markdown heading prefix."
@@ -121,6 +138,7 @@ class GeminiTranslator(TranslatorEngine):
             if candidates:
                 # Kiểm tra finishReason
                 finish_reason = candidates[0].get("finishReason", "")
+                self.last_finish_reason = finish_reason
                 if finish_reason in ("SAFETY", "PROHIBITED_CONTENT"):
                     raise GeminiSafetyBlockError("Nội dung bị Gemini từ chối do chính sách an toàn")
                 parts = candidates[0].get("content", {}).get("parts", [])
@@ -132,7 +150,7 @@ class GeminiTranslator(TranslatorEngine):
                 raise GeminiSafetyBlockError(f"Nội dung bị Gemini từ chối do chính sách an toàn ({prompt_feedback.get('blockReason')})")
             raise ValueError(f"Gemini API trả về kết quả trống: {res_data}")
 
-    def call_gemini_api(self, text: str, is_title: bool = False, source_lang: str = "zh", progress_callback: Optional[Callable[[str], None]] = None) -> str:
+    def call_gemini_api(self, text: str, is_title: bool = False, source_lang: str = "zh", progress_callback: Optional[Callable[[str], None]] = None, override_max_tokens: Optional[int] = None) -> str:
         """
         Gọi API Gemini v1beta để sinh bản dịch với cơ chế tự động thử lại nếu gặp lỗi 429/503.
         """
@@ -142,6 +160,8 @@ class GeminiTranslator(TranslatorEngine):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         
         system_instruction = self.build_system_prompt(source_lang, is_title)
+
+        max_tokens = override_max_tokens if override_max_tokens is not None else 4096
 
         payload = {
             "contents": [
@@ -158,7 +178,7 @@ class GeminiTranslator(TranslatorEngine):
             },
             "generationConfig": {
                 "temperature": self.temperature,
-                "maxOutputTokens": 4096
+                "maxOutputTokens": max_tokens
             },
             "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -234,9 +254,24 @@ class GeminiTranslator(TranslatorEngine):
         """
         Dịch một chunk văn bản, thử lại tối đa 1 lần nếu phát hiện rò rỉ chữ Trung Quốc vượt ngưỡng.
         """
+        self.last_finish_reason = None
         output = self.call_gemini_api(chunk, source_lang=source_lang, progress_callback=progress_callback)
         
-        if self.contains_chinese_leak(output):
+        # 1. Kiểm tra giới hạn token (MAX_TOKENS)
+        if self.last_finish_reason == "MAX_TOKENS":
+            warn_msg = f"[WARN] Chunk {chunk_index} bị cắt cụt do giới hạn token Gemini. Đang thử lại với maxOutputTokens lớn hơn..."
+            if progress_callback:
+                progress_callback(warn_msg)
+            
+            # Thử lại với 1.5x tokens (tối đa 8192)
+            retry_max_tokens = min(8192, int(4096 * 1.5))
+            output = self.call_gemini_api(chunk, source_lang=source_lang, progress_callback=progress_callback, override_max_tokens=retry_max_tokens)
+            
+            if self.last_finish_reason == "MAX_TOKENS":
+                raise ValueError("output_truncated")
+
+        # 2. Kiểm tra rò rỉ chữ Trung Quốc
+        if self.has_chinese_leak(output):
             warn_msg = f"[WARN] Phát hiện rò rỉ chữ Trung ở chunk {chunk_index} ({len(self.chinese_char_pattern.findall(output))} ký tự). Tiến hành dịch lại ở nhiệt độ thấp hơn..."
             if progress_callback:
                 progress_callback(warn_msg)
@@ -245,6 +280,8 @@ class GeminiTranslator(TranslatorEngine):
             self.temperature = 0.05
             try:
                 output = self.call_gemini_api(chunk, source_lang=source_lang, progress_callback=progress_callback)
+                if self.last_finish_reason == "MAX_TOKENS":
+                    raise ValueError("output_truncated")
             finally:
                 self.temperature = original_temp
 
@@ -290,9 +327,13 @@ class GeminiTranslator(TranslatorEngine):
                 progress_callback("[->] Đang dịch tiêu đề chương bằng Gemini...")
             try:
                 translated_title = self.call_gemini_api(title_line, is_title=True, source_lang=source_lang, progress_callback=progress_callback)
-            except GeminiSafetyBlockError:
+            except Exception as e:
+                is_safety = isinstance(e, GeminiSafetyBlockError)
                 if progress_callback:
-                    progress_callback("[INFO] Gemini từ chối dịch tiêu đề do chính sách nội dung, đang chuyển sang dịch bằng Ollama (local)...")
+                    if is_safety:
+                        progress_callback("[INFO] Gemini từ chối dịch tiêu đề do chính sách nội dung, đang chuyển sang dịch bằng Ollama (local)...")
+                    else:
+                        progress_callback(f"[INFO] Lỗi dịch tiêu đề bằng Gemini ({e}), đang chuyển sang dịch bằng Ollama (local)...")
                 try:
                     ollama_trans = self._get_ollama_fallback_translator()
                     if ollama_trans and ollama_trans.is_available():
@@ -303,10 +344,6 @@ class GeminiTranslator(TranslatorEngine):
                     translated_title = title_line
                     if progress_callback:
                         progress_callback(f"[WARN] Fallback sang Ollama thất bại: {ollama_err}. Giữ nguyên gốc.")
-            except Exception as e:
-                translated_title = title_line
-                if progress_callback:
-                    progress_callback(f"[WARN] Lỗi dịch tiêu đề: {e}. Giữ nguyên gốc.")
 
         if progress_callback:
             progress_callback("[->] Đang gửi nội dung tới Gemini API...")
@@ -315,9 +352,13 @@ class GeminiTranslator(TranslatorEngine):
         total_chunks = len(chunks)
         paragraph_mappings = []
 
-        # Tầng 1: Dịch từng chunk (có retry)
-        for i, chunk in enumerate(chunks, 1):
-            orig_paras = [p.strip() for p in chunk.split("\n\n") if p.strip()]
+        # 1. Đảm bảo TUYỆT ĐỐI thứ tự bằng mảng độ dài cố định
+        translated_chunks = [None] * total_chunks
+        chunk_statuses = {}
+
+        # Tầng 1: Dịch từng chunk tuần tự theo đúng index gốc
+        for i in range(1, total_chunks + 1):
+            chunk = chunks[i - 1]
             if progress_callback and total_chunks > 1:
                 progress_callback(f"[->] Đang dịch phần {i}/{total_chunks}...")
             
@@ -325,44 +366,86 @@ class GeminiTranslator(TranslatorEngine):
                 translated_chunk = self.translate_chunk_with_retry(
                     chunk, i, total_chunks, progress_callback, source_lang=source_lang
                 )
-            except GeminiSafetyBlockError:
+                if not translated_chunk or not translated_chunk.strip():
+                    raise ValueError("Phản hồi rỗng từ Gemini")
+                chunk_statuses[i] = "direct_success"
+            except Exception as e:
+                is_safety = isinstance(e, GeminiSafetyBlockError)
+                is_truncation = "output_truncated" in str(e)
+                if is_safety:
+                    info_msg = f"[INFO] Gemini từ chối dịch phần {i} do chính sách nội dung, đang chuyển sang dịch bằng Ollama (local) cho đoạn này..."
+                elif is_truncation:
+                    info_msg = f"[INFO] Gemini bị cắt cụt đầu ra ở phần {i}, đang chuyển sang dịch bằng Ollama (local) cho đoạn này..."
+                else:
+                    info_msg = f"[INFO] Lỗi dịch phần {i} ({e}), đang chuyển sang dịch bằng Ollama (local) cho đoạn này..."
+                
                 if progress_callback:
-                    progress_callback(f"[INFO] Gemini từ chối dịch phần {i} do chính sách nội dung, đang chuyển sang dịch bằng Ollama (local) cho đoạn này...")
+                    progress_callback(info_msg)
+                
                 try:
                     ollama_trans = self._get_ollama_fallback_translator()
                     if ollama_trans and ollama_trans.is_available():
                         translated_chunk = ollama_trans.translate(chunk, progress_callback=progress_callback, source_lang=source_lang)
+                        if not translated_chunk or not translated_chunk.strip():
+                            raise ValueError("Phản hồi rỗng từ Ollama fallback")
+                        chunk_statuses[i] = "fallback_success"
                     else:
                         raise ValueError("Ollama không khả dụng để fallback (chưa chạy hoặc thiếu model)")
                 except Exception as ollama_err:
                     if progress_callback:
                         progress_callback(f"[WARN] Fallback sang Ollama thất bại: {ollama_err}. Giữ nguyên bản gốc để vá ở Tầng 2.")
                     translated_chunk = chunk
-            except Exception as e:
-                if progress_callback:
-                    progress_callback(f"[WARN] Lỗi dịch chunk {i}: {e}. Giữ nguyên bản gốc để vá ở Tầng 2.")
-                translated_chunk = chunk
+                    if "output_truncated" in str(ollama_err) or is_truncation:
+                        chunk_statuses[i] = "truncated"
+                    else:
+                        chunk_statuses[i] = "failed"
 
+            translated_chunks[i - 1] = translated_chunk
+
+        # Ghép paragraph mappings sau khi đã dịch xong tất cả các chunk theo đúng thứ tự
+        for i in range(1, total_chunks + 1):
+            chunk = chunks[i - 1]
+            translated_chunk = translated_chunks[i - 1]
+            orig_paras = [p.strip() for p in chunk.split("\n\n") if p.strip()]
             trans_paras = [p.strip() for p in translated_chunk.split("\n\n") if p.strip()]
             
             if len(orig_paras) == len(trans_paras):
-                paragraph_mappings.extend(list(zip(orig_paras, trans_paras)))
+                for op, tp in zip(orig_paras, trans_paras):
+                    paragraph_mappings.append((op, tp, i))
             else:
-                paragraph_mappings.append(("\n\n".join(orig_paras), "\n\n".join(trans_paras)))
+                paragraph_mappings.append(("\n\n".join(orig_paras), "\n\n".join(trans_paras), i))
 
         # Tầng 2: Quét toàn file sau ghép để vá rò rỉ từng đoạn
         if progress_callback:
             progress_callback("[->] Đang quét lại toàn bộ văn bản (Tầng 2) để sửa lỗi rò rỉ ranh giới...")
 
         repaired_paras = []
-        failed_count = 0
+        failed_chunks_report = []
 
-        for orig_p, trans_p in paragraph_mappings:
-            if orig_p == trans_p:
-                # Nếu đoạn dịch giống hệt đoạn gốc (chưa được dịch tí nào do lỗi cả chunk ở Tầng 1),
-                # thử dịch lại bằng Ollama
+        success_direct = 0
+        success_fallback = 0
+
+        for orig_p, trans_p, chunk_index in paragraph_mappings:
+            p_failed = False
+            p_reason = ""
+            p_status = "direct_success"
+
+            # 1. Nếu chunk bị cắt cụt ở Tầng 1
+            if chunk_statuses.get(chunk_index) == "truncated":
+                p_failed = True
+                p_reason = "output_truncated"
+                trans_p = orig_p
+                p_status = "failed"
+
+            # 2. Nếu đoạn gốc chỉ chứa ký tự đặc biệt/dấu câu (không có chữ hay số), giữ nguyên bản gốc và coi như dịch thành công
+            elif not re.search(r"\w", orig_p):
+                trans_p = orig_p
+                p_status = "direct_success"
+
+            # 2. Nếu chưa được dịch ở Tầng 1 (giống hệt bản gốc hoặc bị rỗng)
+            elif orig_p == trans_p or not trans_p or not trans_p.strip():
                 if progress_callback:
-                    progress_callback(f"[INFO] Phát hiện đoạn chưa được dịch ở Tầng 1. Tiến hành dịch bằng Ollama...")
+                    progress_callback(f"[INFO] Phát hiện đoạn chưa được dịch hoặc bị rỗng ở Tầng 1. Tiến hành dịch bằng Ollama...")
                 try:
                     ollama_trans = self._get_ollama_fallback_translator()
                     if ollama_trans and ollama_trans.is_available():
@@ -372,58 +455,109 @@ class GeminiTranslator(TranslatorEngine):
                 except Exception:
                     re_trans = orig_p
 
-                if re_trans == orig_p or self.contains_chinese_leak(re_trans):
-                    failed_count += 1
-                    repaired_paras.append(f"> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n{orig_p}")
+                if not re_trans or re_trans == orig_p or self.has_chinese_leak(re_trans):
+                    p_failed = True
+                    p_reason = "untranslated"
+                    trans_p = orig_p
+                    p_status = "failed"
                 else:
-                    repaired_paras.append(re_trans)
-            elif self.contains_chinese_leak(trans_p):
+                    trans_p = re_trans
+                    p_status = "fallback_success"
+
+            # 3. Nếu bị rò rỉ chữ Hán
+            elif self.has_chinese_leak(trans_p):
                 if progress_callback:
                     progress_callback(f"[->] Phát hiện rò rỉ chữ Hán ở đoạn: '{trans_p[:30]}...'. Tiến hành dịch vá...")
                 
+                re_trans_success = False
                 try:
                     re_trans = self.call_gemini_api(orig_p, source_lang=source_lang, progress_callback=progress_callback)
-                    if self.contains_chinese_leak(re_trans):
+                    if self.has_chinese_leak(re_trans):
                         original_temp = self.temperature
                         self.temperature = 0.05
                         try:
                             re_trans = self.call_gemini_api(orig_p, source_lang=source_lang, progress_callback=progress_callback)
                         finally:
                             self.temperature = original_temp
-                except GeminiSafetyBlockError:
+                    if not re_trans or not self.has_chinese_leak(re_trans):
+                        re_trans_success = True
+                        p_status = "direct_success"
+                except Exception as e:
+                    is_safety = isinstance(e, GeminiSafetyBlockError)
                     if progress_callback:
-                        progress_callback(f"[INFO] Gemini từ chối vá đoạn do chính sách nội dung, đang chuyển sang vá bằng Ollama...")
+                        if is_safety:
+                            progress_callback(f"[INFO] Gemini từ chối vá đoạn do chính sách nội dung, đang chuyển sang vá bằng Ollama...")
+                        else:
+                            progress_callback(f"[INFO] Lỗi Gemini khi vá đoạn ({e}), đang chuyển sang vá bằng Ollama...")
                     try:
                         ollama_trans = self._get_ollama_fallback_translator()
                         if ollama_trans and ollama_trans.is_available():
                             re_trans = ollama_trans.translate(orig_p, progress_callback=progress_callback, source_lang=source_lang)
+                            if not re_trans or not self.has_chinese_leak(re_trans):
+                                re_trans_success = True
+                                p_status = "fallback_success"
                         else:
                             raise ValueError("Ollama không khả dụng để fallback")
                     except Exception as ollama_err:
                         re_trans = orig_p
                         if progress_callback:
                             progress_callback(f"[WARN] Fallback sang Ollama thất bại: {ollama_err}")
-                except Exception:
-                    re_trans = orig_p
                 
-                if self.contains_chinese_leak(re_trans):
-                    failed_count += 1
-                    repaired_paras.append(f"> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n{orig_p}")
-                    if progress_callback:
-                        progress_callback(f"[WARN] Vá thất bại, giữ nguyên bản gốc đoạn: '{orig_p[:30]}...'")
+                if not re_trans or (not re_trans_success and self.has_chinese_leak(re_trans)):
+                    p_failed = True
+                    p_reason = "leak sau cả 2 lớp"
+                    trans_p = orig_p
+                    p_status = "failed"
                 else:
-                    repaired_paras.append(re_trans)
+                    trans_p = re_trans
+                    if not re_trans_success:
+                        p_status = "direct_success"
                     if progress_callback:
                         progress_callback(f"[SUCCESS] Vá thành công: '{re_trans[:30]}...'")
+            
+            # 4. Dịch thành công
             else:
-                repaired_paras.append(trans_p)
+                trans_p = trans_p
+                if chunk_statuses.get(chunk_index) == "fallback_success":
+                    p_status = "fallback_success"
+                else:
+                    p_status = "direct_success"
+
+            # Tính vị trí ký tự bắt đầu đoạn lỗi trong file output
+            title_offset = (len(translated_title) + 2) if translated_title else 0
+            para_start_pos = len("\n\n".join(repaired_paras)) + (2 if repaired_paras else 0) + title_offset
+
+            if p_failed:
+                failed_chunks_report.append({
+                    "chunk_index": chunk_index,
+                    "char_position_start": para_start_pos,
+                    "reason": p_reason if p_reason else "leak sau cả 2 lớp",
+                    "original_text_preview": orig_p[:60]
+                })
+
+            if p_status == "direct_success":
+                success_direct += 1
+            elif p_status == "fallback_success":
+                success_fallback += 1
+
+            repaired_paras.append(trans_p)
 
         translated_body = "\n\n".join(repaired_paras)
         
         total_paras = len(paragraph_mappings)
+        failed_count = len(failed_chunks_report)
         success_paras = total_paras - failed_count
         if progress_callback:
             progress_callback(f"[INFO] Hoàn thành dịch: thành công {success_paras}/{total_paras} đoạn, {failed_count} đoạn lỗi.")
+
+        self.last_report = {
+            "engine": "gemini",
+            "total_chunks": total_chunks,
+            "total_paras": total_paras,
+            "success_direct": success_direct,
+            "success_fallback": success_fallback,
+            "failed_chunks": failed_chunks_report
+        }
 
         final_output = []
         if translated_title:
@@ -444,3 +578,22 @@ class GeminiTranslator(TranslatorEngine):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(translated_text)
+
+        # Write .translation_report.json alongside the output file
+        import datetime
+        report = {
+            "source_file": os.path.abspath(input_path),
+            "output_file": os.path.abspath(output_path),
+            "engine": self.last_report.get("engine", "gemini"),
+            "total_chunks": self.last_report.get("total_chunks", 0),
+            "total_paras": self.last_report.get("total_paras", 0),
+            "success_direct": self.last_report.get("success_direct", 0),
+            "success_fallback": self.last_report.get("success_fallback", 0),
+            "failed_chunks": self.last_report.get("failed_chunks", []),
+            "translated_at": datetime.datetime.now().isoformat()
+        }
+        
+        input_base = os.path.splitext(os.path.basename(input_path))[0]
+        report_path = os.path.join(os.path.dirname(output_path), f"{input_base}.translation_report.json")
+        with open(report_path, "w", encoding="utf-8") as rf:
+            json.dump(report, rf, ensure_ascii=False, indent=2)

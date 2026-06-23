@@ -119,9 +119,80 @@ class TestOllamaTranslator(unittest.TestCase):
         )
         result = self.translator.translate(text)
         
-        # Kiểm tra xem có chèn thẻ cảnh báo lỗi và giữ nguyên bản gốc không
-        self.assertIn("> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]", result)
+        # Kiểm tra xem văn bản được trả về sạch (không chứa cảnh báo chèn trong md) và lưu lỗi vào report
+        self.assertNotIn("> ⚠️", result)
         self.assertIn("Văn bản bị lỗi.", result)
+        
+        report = self.translator.last_report
+        self.assertEqual(report["total_chunks"], 1)
+        self.assertEqual(len(report["failed_chunks"]), 1)
+        self.assertEqual(report["failed_chunks"][0]["chunk_index"], 1)
+        self.assertEqual(report["failed_chunks"][0]["reason"], "leak sau cả 2 lớp")
+
+    def test_translate_empty_chunk_fallback(self):
+        self.translator.call_ollama_api = MagicMock(return_value="")
+        self.translator.is_available = MagicMock(return_value=True)
+        text = "Văn bản gốc tiếng Trung."
+        result = self.translator.translate(text)
+        self.assertIn("Văn bản gốc tiếng Trung.", result)
+        self.assertEqual(len(self.translator.last_report["failed_chunks"]), 1)
+
+    def test_has_chinese_leak(self):
+        self.assertFalse(self.translator.has_chinese_leak("Bản dịch tiếng Việt."))
+        self.assertTrue(self.translator.has_chinese_leak("Bản dịch chứa 奇迹种子魔法少女"))
+        large_text = "Đoạn 1 tiếng Việt.\n\nĐoạn 2 chứa 奇迹种子魔法少女.\n\nĐoạn 3 tiếng Việt dài thật là dài để làm loãng tỷ lệ rò rỉ."
+        self.assertTrue(self.translator.has_chinese_leak(large_text))
+
+    def test_translate_truncation_retry_success(self):
+        # Lượt 1 bị truncated (done_reason == "length"), lượt 2 retry thành công
+        call_count = 0
+        def mock_call(text, is_title=False, source_lang="zh", override_num_predict=None):
+            nonlocal call_count
+            call_count += 1
+            if is_title:
+                return "Dịch Tiêu Đề"
+            if call_count == 2:  # Lần đầu của chunk 1
+                self.translator.last_done_reason = "length"
+                return "Cắt cụt..."
+            self.translator.last_done_reason = "stop"
+            return "Bản dịch đầy đủ hoàn hảo."
+
+        self.translator.call_ollama_api = MagicMock(side_effect=mock_call)
+        self.translator.is_available = MagicMock(return_value=True)
+
+        text = (
+            "# Tiêu đề\n"
+            "Nội dung cần dịch."
+        )
+        result = self.translator.translate(text)
+        
+        # Lần gọi: 1 tiêu đề + 1 chunk (thử lần 1, ra length) + 1 chunk (retry với 1.5x) = 3 lần
+        self.assertEqual(self.translator.call_ollama_api.call_count, 3)
+        self.assertIn("Bản dịch đầy đủ hoàn hảo.", result)
+
+    def test_translate_truncation_retry_fail(self):
+        # Lượt 1 bị truncated, lượt 2 retry vẫn bị truncated -> thất bại với output_truncated
+        def mock_call(text, is_title=False, source_lang="zh", override_num_predict=None):
+            if is_title:
+                return "Dịch Tiêu Đề"
+            self.translator.last_done_reason = "length"
+            return "Cắt cụt..."
+
+        self.translator.call_ollama_api = MagicMock(side_effect=mock_call)
+        self.translator.is_available = MagicMock(return_value=True)
+
+        text = (
+            "# Tiêu đề\n"
+            "Nội dung bị lỗi."
+        )
+        result = self.translator.translate(text)
+        
+        # Phải trả về bản gốc và ghi nhận lỗi output_truncated
+        self.assertIn("Nội dung bị lỗi.", result)
+        report = self.translator.last_report
+        self.assertEqual(report["total_chunks"], 1)
+        self.assertEqual(len(report["failed_chunks"]), 1)
+        self.assertEqual(report["failed_chunks"][0]["reason"], "output_truncated")
 
     def test_config_schema(self):
         config = get_default_config()
@@ -263,9 +334,140 @@ class TestGeminiTranslator(unittest.TestCase):
         )
         result = self.translator.translate(text)
         
-        # Vì Ollama không khả dụng, đoạn đó sẽ bị giữ nguyên bản gốc kèm cảnh báo lỗi
-        self.assertIn("> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]", result)
+        # Vì Ollama không khả dụng, đoạn đó sẽ bị giữ nguyên bản gốc mà không chèn cảnh báo md, và ghi vào report
+        self.assertNotIn("> ⚠️", result)
         self.assertIn("Nội dung bị chặn bởi Gemini.", result)
+        
+        report = self.translator.last_report
+        self.assertEqual(report["total_chunks"], 1)
+        self.assertEqual(len(report["failed_chunks"]), 1)
+        self.assertEqual(report["failed_chunks"][0]["chunk_index"], 1)
+        self.assertEqual(report["failed_chunks"][0]["reason"], "untranslated")
+
+    def test_translate_order_preservation_with_latency(self):
+        from translator.gemini_translator import GeminiSafetyBlockError
+        import time
+
+        self.translator.max_chunk_chars = 10
+
+        # Giả lập:
+        # - Chunk 0 ("Chunk Zero."): Gemini dịch thành công ngay lập tức.
+        # - Chunk 1 ("Chunk One."): Gemini bị block nội dung, chuyển sang fallback Ollama. 
+        #   Fallback Ollama tốn nhiều thời gian (giả lập sleep 0.1s).
+        # - Chunk 2 ("Chunk Two."): Gemini dịch thành công ngay lập tức.
+        
+        def mock_gemini_call(text, is_title=False, source_lang="zh", progress_callback=None):
+            if "Zero" in text:
+                return "Dịch Zero"
+            elif "One" in text:
+                raise GeminiSafetyBlockError("Nội dung nhạy cảm ở chunk 1")
+            elif "Two" in text:
+                return "Dịch Two"
+            return text
+
+        self.translator.call_gemini_api = MagicMock(side_effect=mock_gemini_call)
+        self.translator.is_available = MagicMock(return_value=True)
+
+        # Mock Ollama fallback translator
+        mock_ollama = MagicMock()
+        mock_ollama.is_available.return_value = True
+        
+        def mock_ollama_translate(text, progress_callback=None, source_lang="zh"):
+            time.sleep(0.1)  # Giả lập độ trễ / tốn thời gian hơn
+            if "One" in text:
+                return "Dịch One Fallback"
+            return text
+            
+        mock_ollama.translate = MagicMock(side_effect=mock_ollama_translate)
+        self.translator._get_ollama_fallback_translator = MagicMock(return_value=mock_ollama)
+
+        text = (
+            "Chunk Zero.\n\n"
+            "Chunk One.\n\n"
+            "Chunk Two."
+        )
+
+        result = self.translator.translate(text)
+
+        # Kiểm tra thứ tự văn bản ghép cuối cùng phải đúng là 0 -> 1 -> 2
+        # Tức là: Dịch Zero -> Dịch One Fallback -> Dịch Two
+        expected_result = "Dịch Zero\n\nDịch One Fallback\n\nDịch Two"
+        self.assertEqual(result.strip(), expected_result.strip())
+        
+        # Xác nhận trong last_report
+        report = self.translator.last_report
+        self.assertEqual(report["total_chunks"], 3)
+        self.assertEqual(report["success_direct"], 2)
+        self.assertEqual(report["success_fallback"], 1)
+        self.assertEqual(len(report["failed_chunks"]), 0)
+
+    def test_translate_empty_chunk_fallback(self):
+        self.translator.call_gemini_api = MagicMock(return_value="")
+        self.translator.is_available = MagicMock(return_value=True)
+        mock_ollama = MagicMock()
+        mock_ollama.is_available.return_value = True
+        mock_ollama.translate = MagicMock(return_value="Dịch thành công từ Ollama")
+        self.translator._get_ollama_fallback_translator = MagicMock(return_value=mock_ollama)
+        text = "Văn bản gốc."
+        result = self.translator.translate(text)
+        self.assertIn("Dịch thành công từ Ollama", result)
+
+    def test_translate_truncation_retry_success(self):
+        # Lượt 1 bị truncated (finishReason == "MAX_TOKENS"), lượt 2 retry thành công
+        call_count = 0
+        def mock_call(text, is_title=False, source_lang="zh", progress_callback=None, override_max_tokens=None):
+            nonlocal call_count
+            call_count += 1
+            if is_title:
+                return "Dịch Tiêu Đề"
+            if call_count == 2:
+                self.translator.last_finish_reason = "MAX_TOKENS"
+                return "Cắt cụt..."
+            self.translator.last_finish_reason = "STOP"
+            return "Bản dịch đầy đủ hoàn hảo."
+
+        self.translator.call_gemini_api = MagicMock(side_effect=mock_call)
+        self.translator.is_available = MagicMock(return_value=True)
+
+        text = (
+            "# Tiêu đề\n"
+            "Nội dung cần dịch."
+        )
+        result = self.translator.translate(text)
+        
+        self.assertEqual(self.translator.call_gemini_api.call_count, 3)
+        self.assertIn("Bản dịch đầy đủ hoàn hảo.", result)
+
+    def test_translate_truncation_retry_fail(self):
+        # Lượt 1 bị truncated, lượt 2 retry vẫn bị truncated -> thất bại với output_truncated
+        def mock_call(text, is_title=False, source_lang="zh", progress_callback=None, override_max_tokens=None):
+            if is_title:
+                return "Dịch Tiêu Đề"
+            self.translator.last_finish_reason = "MAX_TOKENS"
+            return "Cắt cụt..."
+
+        self.translator.call_gemini_api = MagicMock(side_effect=mock_call)
+        self.translator.is_available = MagicMock(return_value=True)
+        # Disable fallback to keep tests pure
+        self.translator._get_ollama_fallback_translator = MagicMock(return_value=None)
+
+        text = (
+            "# Tiêu đề\n"
+            "Nội dung bị lỗi."
+        )
+        result = self.translator.translate(text)
+        
+        self.assertIn("Nội dung bị lỗi.", result)
+        report = self.translator.last_report
+        self.assertEqual(report["total_chunks"], 1)
+        self.assertEqual(len(report["failed_chunks"]), 1)
+        self.assertEqual(report["failed_chunks"][0]["reason"], "output_truncated")
+
+    def test_has_chinese_leak(self):
+        self.assertFalse(self.translator.has_chinese_leak("Bản dịch tiếng Việt."))
+        self.assertTrue(self.translator.has_chinese_leak("Bản dịch chứa 奇迹种子魔法少女"))
+        large_text = "Đoạn 1 tiếng Việt.\n\nĐoạn 2 chứa 奇迹种子魔法少女.\n\nĐoạn 3 tiếng Việt dài thật là dài để làm loãng tỷ lệ rò rỉ."
+        self.assertTrue(self.translator.has_chinese_leak(large_text))
 
 if __name__ == "__main__":
     unittest.main()

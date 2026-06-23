@@ -3,9 +3,9 @@
   "output_dir": "./truyen_tai_ve",
   "source": "69shuba",
   "translator": {
-    "engine": "gemini",
-    "ollama_model": "qwen2.5:7b-instruct",
-    "leak_threshold_percent": 10,
+    "engine": "ollama",
+    "ollama_model": "qwen3:8b",
+    "leak_threshold_percent": 1,
     "gemini_api_key": "",
     "gemini_model": "gemini-flash-latest"
   }
