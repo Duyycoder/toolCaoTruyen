@@ -409,6 +409,60 @@
         ::-webkit-scrollbar-thumb:hover {
             background: var(--text-muted);
         }
+
+        /* --- SEARCH & CATALOG ITEMS STYLES --- */
+        .search-item {
+            padding: 0.6rem 0.85rem;
+            border-radius: var(--radius-sm);
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .search-item:hover {
+            border-color: var(--border-focus);
+            background-color: rgba(20, 184, 166, 0.05);
+        }
+        .search-item.selected {
+            border-color: var(--border-focus);
+            background-color: rgba(20, 184, 166, 0.15);
+            box-shadow: 0 0 10px rgba(20, 184, 166, 0.1);
+        }
+        .search-item-title {
+            font-weight: 500;
+            font-size: 0.85rem;
+            color: var(--text-primary);
+        }
+        .search-item-author {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .catalog-item {
+            padding: 0.4rem 0.6rem;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+        .catalog-item:hover {
+            background-color: rgba(20, 184, 166, 0.08);
+        }
+        .catalog-item.selected {
+            background-color: rgba(20, 184, 166, 0.2);
+            color: var(--border-focus);
+            font-weight: bold;
+        }
+        .catalog-item-index {
+            color: var(--text-muted);
+            min-width: 2.2rem;
+            text-align: right;
+        }
     </style>
 </head>
 <body>
@@ -456,6 +510,26 @@
             <div class="form-group">
                 <label for="input-base-url">Base URL</label>
                 <input type="text" id="input-base-url" placeholder="https://www.69shuba.com/txt">
+            </div>
+
+            <!-- Tìm kiếm truyện (Mới) -->
+            <div class="form-group" id="search-section" style="border-top: 1px solid var(--border-color); padding-top: 1rem;">
+                <label for="input-search-keyword">Tìm kiếm truyện theo tên</label>
+                <div class="directory-flex">
+                    <input type="text" id="input-search-keyword" placeholder="Nhập tên truyện (tiếng Việt / Trung)...">
+                    <button type="button" class="btn btn-secondary" id="btn-search-book">🔍 Tìm kiếm</button>
+                </div>
+                <div id="search-results-list" style="display: none; flex-direction: column; gap: 0.5rem; max-height: 180px; overflow-y: auto; background-color: rgba(5, 7, 12, 0.5); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 0.5rem; margin-top: 0.5rem;">
+                    <!-- Danh sách truyện sẽ được load qua JS -->
+                </div>
+            </div>
+
+            <!-- Chọn chương từ mục lục (Mới) -->
+            <div class="form-group" id="catalog-section" style="display: none; border-top: 1px dashed var(--border-color); padding-top: 1rem;">
+                <label id="catalog-label">Mục lục chương (Nhấn để chọn chương bắt đầu)</label>
+                <div id="catalog-list" style="display: flex; flex-direction: column; gap: 0.25rem; max-height: 180px; overflow-y: auto; background-color: rgba(5, 7, 12, 0.5); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 0.5rem; font-family: monospace; font-size: 0.8rem;">
+                    <!-- Danh sách chương sẽ được load qua JS -->
+                </div>
             </div>
 
             <!-- ID Truyện & ID Chương bắt đầu -->
@@ -573,6 +647,7 @@
                 <select id="select-trans-engine">
                     <option value="ollama" selected>Ollama (Chạy Offline Local)</option>
                     <option value="gemini">Gemini API (Cần API Key + Kết nối mạng)</option>
+                    <option value="gemini_api">Gemini API (Offline/Local)</option>
                 </select>
             </div>
 
@@ -600,6 +675,29 @@
                 <div class="form-group">
                     <label for="input-gemini-model">Gemini Model</label>
                     <input type="text" id="input-gemini-model" value="gemini-2.5-flash">
+                </div>
+            </div>
+
+            <!-- Cấu hình Gemini API Offline/Local -->
+            <div id="block-gemini-offline-config" style="display: none; flex-direction: column; gap: 1rem;">
+                <div class="form-group">
+                    <label for="input-gemini-offline-key">API Key (Offline)</label>
+                    <div class="directory-flex">
+                        <input type="password" id="input-gemini-offline-key" placeholder="Nhập API Key..." value="sk-gemini-YrVwXWGegzkFlevHPdQy7Fpry14HJVirqvnuxukz">
+                        <button type="button" class="btn btn-secondary" id="btn-toggle-gemini-offline-key" style="min-width: 70px; padding: 0 10px;">Hiện</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="input-gemini-offline-base-url">Base URL</label>
+                    <input type="text" id="input-gemini-offline-base-url" value="http://localhost:7860/v1">
+                    <p class="helper-text">Địa chỉ server Gemini API chạy local/offline (OpenAI-compatible)</p>
+                </div>
+                <div class="form-group">
+                    <label for="input-gemini-offline-model">Model</label>
+                    <input type="text" id="input-gemini-offline-model" value="gemini-2.5-flash">
+                </div>
+                <div id="gemini-cookie-warning" style="display: none; margin-top: 0.5rem; color: #ff9800; background-color: rgba(255, 152, 0, 0.1); border: 1px solid rgba(255, 152, 0, 0.2); padding: 0.75rem; border-radius: 4px; font-size: 0.9rem; line-height: 1.4; font-family: sans-serif;">
+                    <strong>⚠️ Cảnh báo cookies:</strong> <span id="gemini-cookie-warning-text"></span>
                 </div>
             </div>
 
@@ -692,6 +790,13 @@
         const progressPercentTxt = document.getElementById("progress-percent-txt");
         const progressChaptersTxt = document.getElementById("progress-chapters-txt");
 
+        // --- SEARCH & CATALOG DOM ELEMENTS ---
+        const inputSearchKeyword = document.getElementById("input-search-keyword");
+        const btnSearchBook = document.getElementById("btn-search-book");
+        const searchResultsList = document.getElementById("search-results-list");
+        const catalogSection = document.getElementById("catalog-section");
+        const catalogList = document.getElementById("catalog-list");
+
         function logToConsole(message, type = "info", bold = false) {
             const div = document.createElement("div");
             div.className = `log-${type} ${bold ? 'log-bold' : ''}`;
@@ -728,11 +833,16 @@
                     selectTransEngine.value = config.translator.engine || "ollama";
                     inputGeminiKey.value = config.translator.gemini_api_key || "";
                     inputGeminiModel.value = config.translator.gemini_model || "gemini-2.5-flash";
+                    inputGeminiOfflineKey.value = config.translator.gemini_offline_key || "sk-gemini-YrVwXWGegzkFlevHPdQy7Fpry14HJVirqvnuxukz";
+                    inputGeminiOfflineBaseUrl.value = config.translator.gemini_offline_base_url || "http://localhost:7860/v1";
+                    inputGeminiOfflineModel.value = config.translator.gemini_offline_model || "gemini-2.5-flash";
                     inputLeakThreshold.value = config.translator.leak_threshold_percent || 10;
                     checkAutoExtractGlossary.checked = config.translator.auto_extract_glossary !== false;
                     
                     toggleEngineConfigBlocks(config.translator.engine);
                     await loadOllamaModelsRegistry(config.translator.ollama_model);
+                    // Kiểm tra cookies Gemini Offline sau khi tải config
+                    await checkGeminiCookies();
                 }
             } catch (err) {
                 logToConsole(`[✗] Lỗi tải cấu hình: ${err.message}`, "danger");
@@ -766,6 +876,111 @@
             consoleBody.innerHTML = "";
             logToConsole("// Console cleared.", "dim");
         });
+
+        // --- SEARCH & CATALOG WORKFLOW (Mới) ---
+        btnSearchBook.addEventListener("click", async () => {
+            const keyword = inputSearchKeyword.value.trim();
+            if (!keyword) {
+                alert("Vui lòng nhập tên truyện cần tìm!");
+                return;
+            }
+
+            btnSearchBook.disabled = true;
+            btnSearchBook.innerHTML = "⏳...";
+            searchResultsList.style.display = "flex";
+            searchResultsList.innerHTML = `<div style="text-align: center; color: var(--text-secondary); padding: 0.5rem; font-size: 0.85rem;">Đang tìm kiếm...</div>`;
+            catalogSection.style.display = "none";
+            catalogList.innerHTML = "";
+
+            try {
+                const source = selectSource.value;
+                const response = await fetch(`/api/search?keyword=${encodeURIComponent(keyword)}&source=${source}`);
+                const data = await response.json();
+
+                if (data.status === "success" && data.results.length > 0) {
+                    searchResultsList.innerHTML = "";
+                    data.results.forEach(book => {
+                        const item = document.createElement("div");
+                        item.className = "search-item";
+                        item.innerHTML = `
+                            <div>
+                                <div class="search-item-title">${book.title}</div>
+                                <div class="search-item-author">Tác giả: ${book.author}</div>
+                            </div>
+                            <div style="font-size: 0.75rem; color: var(--border-focus); font-weight: bold;">ID: ${book.book_id}</div>
+                        `;
+                        item.addEventListener("click", () => {
+                            // Highlight item
+                            document.querySelectorAll(".search-item").forEach(el => el.classList.remove("selected"));
+                            item.classList.add("selected");
+                            
+                            // Fill fields
+                            inputStoryId.value = book.book_id;
+                            
+                            // Fetch catalog
+                            loadBookCatalog(book.book_url, book.title);
+                        });
+                        searchResultsList.appendChild(item);
+                    });
+                    logToConsole(`[✓] Tìm thấy ${data.results.length} kết quả cho '${keyword}' (Từ khóa dùng: ${data.keyword_used})`, "success");
+                } else {
+                    searchResultsList.innerHTML = `<div style="text-align: center; color: var(--color-warning); padding: 0.5rem; font-size: 0.85rem;">Không tìm thấy truyện nào!</div>`;
+                    logToConsole(`[-] Không tìm thấy truyện khớp với '${keyword}'`, "warning");
+                }
+            } catch (err) {
+                searchResultsList.innerHTML = `<div style="text-align: center; color: var(--color-danger); padding: 0.5rem; font-size: 0.85rem;">Lỗi tìm kiếm!</div>`;
+                logToConsole(`[✗] Lỗi tìm kiếm truyện: ${err.message}`, "danger");
+            } finally {
+                btnSearchBook.disabled = false;
+                btnSearchBook.innerHTML = "🔍 Tìm kiếm";
+            }
+        });
+
+        inputSearchKeyword.addEventListener("keypress", (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                btnSearchBook.click();
+            }
+        });
+
+        async function loadBookCatalog(bookUrl, bookTitle) {
+            catalogSection.style.display = "flex";
+            catalogList.innerHTML = `<div style="text-align: center; color: var(--text-secondary); padding: 0.5rem; font-size: 0.8rem;">Đang tải mục lục chương...</div>`;
+            logToConsole(`[⏳] Đang tải mục lục chương cho truyện '${bookTitle}'...`);
+
+            try {
+                const source = selectSource.value;
+                const response = await fetch(`/api/catalog?book_url=${encodeURIComponent(bookUrl)}&source=${source}`);
+                const data = await response.json();
+
+                if (data.status === "success" && data.chapters.length > 0) {
+                    catalogList.innerHTML = "";
+                    data.chapters.forEach(ch => {
+                        const item = document.createElement("div");
+                        item.className = "catalog-item";
+                        item.innerHTML = `
+                            <span class="catalog-item-index">${ch.index}.</span>
+                            <span style="flex:1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${ch.title}">${ch.title}</span>
+                            <span style="color: var(--text-muted); font-size: 0.75rem;">ID: ${ch.chapter_id}</span>
+                        `;
+                        item.addEventListener("click", () => {
+                            document.querySelectorAll(".catalog-item").forEach(el => el.classList.remove("selected"));
+                            item.classList.add("selected");
+                            inputStartChapterId.value = ch.chapter_id;
+                            logToConsole(`[✓] Đã chọn chương bắt đầu: STT ${ch.index} - ${ch.title} (ID: ${ch.chapter_id})`, "success");
+                        });
+                        catalogList.appendChild(item);
+                    });
+                    logToConsole(`[✓] Đã tải thành công mục lục gồm ${data.total_chapters} chương.`, "success");
+                } else {
+                    catalogList.innerHTML = `<div style="text-align: center; color: var(--color-warning); padding: 0.5rem; font-size: 0.8rem;">Không lấy được mục lục truyện!</div>`;
+                    logToConsole(`[-] Không lấy được mục lục cho truyện '${bookTitle}'`, "warning");
+                }
+            } catch (err) {
+                catalogList.innerHTML = `<div style="text-align: center; color: var(--color-danger); padding: 0.5rem; font-size: 0.8rem;">Lỗi tải mục lục!</div>`;
+                logToConsole(`[✗] Lỗi tải mục lục chương: ${err.message}`, "danger");
+            }
+        }
 
         let wsCrawl = null;
         let isCrawlRunning = false;
@@ -934,6 +1149,12 @@
         const inputGeminiKey = document.getElementById("input-gemini-key");
         const inputGeminiModel = document.getElementById("input-gemini-model");
         const btnToggleGeminiKey = document.getElementById("btn-toggle-gemini-key");
+
+        const blockGeminiOfflineConfig = document.getElementById("block-gemini-offline-config");
+        const inputGeminiOfflineKey = document.getElementById("input-gemini-offline-key");
+        const inputGeminiOfflineBaseUrl = document.getElementById("input-gemini-offline-base-url");
+        const inputGeminiOfflineModel = document.getElementById("input-gemini-offline-model");
+        const btnToggleGeminiOfflineKey = document.getElementById("btn-toggle-gemini-offline-key");
         
         const inputLeakThreshold = document.getElementById("input-leak-threshold");
         const checkAutoExtractGlossary = document.getElementById("check-auto-extract-glossary");
@@ -974,17 +1195,21 @@
 
         // Toggle UI blocks between engines
         function toggleEngineConfigBlocks(engine) {
+            blockOllamaConfig.style.display = "none";
+            blockGeminiConfig.style.display = "none";
+            blockGeminiOfflineConfig.style.display = "none";
             if (engine === "ollama") {
                 blockOllamaConfig.style.display = "flex";
-                blockGeminiConfig.style.display = "none";
-            } else {
-                blockOllamaConfig.style.display = "none";
+            } else if (engine === "gemini") {
                 blockGeminiConfig.style.display = "flex";
+            } else if (engine === "gemini_api") {
+                blockGeminiOfflineConfig.style.display = "flex";
             }
         }
 
         selectTransEngine.addEventListener("change", (e) => {
             toggleEngineConfigBlocks(e.target.value);
+            checkGeminiCookies();
         });
 
         // Load languages registry
@@ -1138,6 +1363,19 @@
             });
         }
 
+        if (btnToggleGeminiOfflineKey) {
+            btnToggleGeminiOfflineKey.addEventListener("click", () => {
+                if (inputGeminiOfflineKey.type === "password") {
+                    inputGeminiOfflineKey.type = "text";
+                    btnToggleGeminiOfflineKey.textContent = "Ẩn";
+                } else {
+                    inputGeminiOfflineKey.type = "password";
+                    btnToggleGeminiOfflineKey.textContent = "Hiện";
+                }
+            });
+        }
+
+
         btnClearTransConsole.addEventListener("click", () => {
             transConsoleBody.innerHTML = "";
             logToTransConsole("// Console cleared.", "dim");
@@ -1156,6 +1394,9 @@
                 selectOllamaModel.disabled = true;
                 inputGeminiKey.disabled = true;
                 inputGeminiModel.disabled = true;
+                inputGeminiOfflineKey.disabled = true;
+                inputGeminiOfflineBaseUrl.disabled = true;
+                inputGeminiOfflineModel.disabled = true;
                 inputLeakThreshold.disabled = true;
             } else {
                 btnStartTranslate.innerHTML = "<span>▶</span> Bắt Đầu Dịch Thuật";
@@ -1168,6 +1409,9 @@
                 selectOllamaModel.disabled = false;
                 inputGeminiKey.disabled = false;
                 inputGeminiModel.disabled = false;
+                inputGeminiOfflineKey.disabled = false;
+                inputGeminiOfflineBaseUrl.disabled = false;
+                inputGeminiOfflineModel.disabled = false;
                 inputLeakThreshold.disabled = false;
             }
         }
@@ -1190,11 +1434,35 @@
             const ollamaModel = selectOllamaModel.value;
             const geminiKey = inputGeminiKey.value.trim();
             const geminiModel = inputGeminiModel.value.trim();
+            const geminiOfflineKey = inputGeminiOfflineKey.value.trim();
+            const geminiOfflineBaseUrl = inputGeminiOfflineBaseUrl.value.trim();
+            const geminiOfflineModel = inputGeminiOfflineModel.value.trim();
             const leakThreshold = parseInt(inputLeakThreshold.value) || 10;
 
             if (engine === "gemini" && !geminiKey) {
                 alert("Vui lòng cấu hình Gemini API Key trước khi dịch!");
                 return;
+            }
+            if (engine === "gemini_api" && !geminiOfflineKey) {
+                alert("Vui lòng cấu hình API Key cho Gemini Offline trước khi dịch!");
+                return;
+            }
+            if (engine === "gemini_api" && !geminiOfflineBaseUrl) {
+                alert("Vui lòng nhập Base URL cho Gemini Offline!");
+                return;
+            }
+
+            // Kiểm tra trạng thái cookies trước khi dịch nếu dùng gemini_api
+            if (engine === "gemini_api") {
+                try {
+                    const cookieRes = await fetch("/api/check-gemini-cookies");
+                    const cookieData = await cookieRes.json();
+                    if (cookieData.status !== "ready") {
+                        logToTransConsole(`[WARN] Tiến trình dịch có thể thất bại: ${cookieData.message}`, "warning");
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
             }
 
             // Đồng bộ config dịch lên server
@@ -1208,6 +1476,9 @@
                         leak_threshold_percent: leakThreshold,
                         gemini_api_key: geminiKey,
                         gemini_model: geminiModel,
+                        gemini_offline_key: geminiOfflineKey,
+                        gemini_offline_base_url: geminiOfflineBaseUrl,
+                        gemini_offline_model: geminiOfflineModel,
                         auto_extract_glossary: checkAutoExtractGlossary.checked
                     })
                 });
@@ -1234,6 +1505,9 @@
                     ollama_model: ollamaModel,
                     gemini_api_key: geminiKey,
                     gemini_model: geminiModel,
+                    gemini_offline_key: geminiOfflineKey,
+                    gemini_offline_base_url: geminiOfflineBaseUrl,
+                    gemini_offline_model: geminiOfflineModel,
                     leak_threshold_percent: leakThreshold,
                     auto_extract_glossary: checkAutoExtractGlossary.checked,
                     source_lang: selectSourceLang.value
@@ -1288,6 +1562,75 @@
                 setTranslateRunningState(false);
             };
         });
+
+        async function checkGeminiCookies() {
+            const warningEl = document.getElementById("gemini-cookie-warning");
+            const warningTextEl = document.getElementById("gemini-cookie-warning-text");
+            const currentEngine = selectTransEngine.value;
+            
+            if (currentEngine !== "gemini_api") {
+                if (warningEl) warningEl.style.display = "none";
+                return;
+            }
+            
+            try {
+                const res = await fetch("/api/check-gemini-cookies");
+                const data = await res.json();
+                if (data.status !== "ready") {
+                    if (warningTextEl) warningTextEl.textContent = data.message;
+                    if (warningEl) warningEl.style.display = "block";
+                } else {
+                    if (warningEl) warningEl.style.display = "none";
+                }
+            } catch (err) {
+                console.error("Lỗi khi kiểm tra cookies Gemini:", err);
+            }
+        }
+
+        function initHeartbeat() {
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const wsUri = `${protocol}//${window.location.host}/ws/heartbeat`;
+            let ws;
+            
+            try {
+                ws = new WebSocket(wsUri);
+            } catch (e) {
+                console.error("Không thể khởi tạo WebSocket Heartbeat:", e);
+                setTimeout(initHeartbeat, 5000);
+                return;
+            }
+            
+            let pingInterval = null;
+            
+            ws.onopen = () => {
+                pingInterval = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send("ping");
+                    }
+                }, 3000);
+            };
+            
+            ws.onclose = () => {
+                if (pingInterval) clearInterval(pingInterval);
+                setTimeout(initHeartbeat, 2000);
+            };
+            
+            ws.onerror = (err) => {
+                console.error("Lỗi WebSocket Heartbeat:", err);
+            };
+        }
+
+        // Cảnh báo khi đóng tab nếu đang tải hoặc dịch
+        window.addEventListener('beforeunload', (event) => {
+            if (isCrawlRunning || isTranslateRunning) {
+                event.preventDefault();
+                event.returnValue = 'Quá trình tải truyện hoặc dịch thuật đang diễn ra. Bạn có chắc chắn muốn thoát?';
+                return event.returnValue;
+            }
+        });
+
+        // Khởi động heartbeat
+        initHeartbeat();
 
         // Load configs
         loadLanguages();

@@ -14,11 +14,14 @@ def get_default_config() -> Dict[str, any]:
         "output_dir": DEFAULT_OUTPUT_DIR,
         "source": "69shuba",
         "translator": {
-            "engine": "ollama",
+            "engine": "gemini_api",
             "ollama_model": "qwen2.5:7b-instruct",
             "leak_threshold_percent": 10,
             "gemini_api_key": "",
             "gemini_model": "gemini-flash-latest",
+            "gemini_offline_key": "sk-gemini-YrVwXWGegzkFlevHPdQy7Fpry14HJVirqvnuxukz",
+            "gemini_offline_base_url": "http://localhost:7860/v1",
+            "gemini_offline_model": "gemini-2.5-flash",
             "auto_extract_glossary": True
         }
     }
