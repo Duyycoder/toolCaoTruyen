@@ -18,3 +18,8 @@ test_output/
 .env.*
 .vscode/
 .idea/
+
+# Gemini API local credentials
+Gemini-API/cookies.json
+Gemini-API/api_keys.json
+

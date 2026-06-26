@@ -3,7 +3,7 @@ import random
 import re
 from typing import Optional, Tuple, Any
 from bs4 import BeautifulSoup
-from sources.base import BaseSourceParser, Color
+from sources.base import BaseSourceParser, Color, BookSearchResult, ChapterInfo
 
 class Shuba69Parser(BaseSourceParser):
     # Các chuỗi rác/quảng cáo thường xuất hiện trên 69shuba, cần loại bỏ
@@ -346,4 +346,429 @@ class Shuba69Parser(BaseSourceParser):
         except Exception as e:
             print(f"\n{Color.RED}[✗] Lỗi khi xác định chương kế tiếp: {e}{Color.RESET}")
             return None
+
+    def _wait_cloudflare(self, driver: Any, max_wait: int = 30) -> bool:
+        """Chờ Cloudflare challenge pass."""
+        for i in range(max_wait):
+            title = driver.title or ""
+            if "Just a moment" in title:
+                time.sleep(1)
+                continue
+            if title and "Just a moment" not in title:
+                return True
+            time.sleep(0.5)
+        return "Just a moment" not in (driver.title or "")
+
+    def _search_via_ddg(self, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện qua DuckDuckGo HTML search (nhanh, không dính Cloudflare)."""
+        import urllib.request
+        import urllib.parse
+        from bs4 import BeautifulSoup
+        
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(self.base_url)
+            domain = parsed.netloc
+            if domain.startswith("www."):
+                domain = domain[4:]
+            home_url = f"{parsed.scheme}://{parsed.netloc}"
+            
+            query = f"site:{domain} {keyword}"
+            url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
+            
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                }
+            )
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html = response.read().decode("utf-8")
+                
+            soup = BeautifulSoup(html, "html.parser")
+            results = []
+            seen_ids = set()
+            
+            for a in soup.find_all("a", class_="result__url"):
+                href = a.get("href", "").strip()
+                # Giải mã URL redirect từ DuckDuckGo
+                match = re.search(r'uddg=([^&]+)', href)
+                if match:
+                    actual_url = urllib.parse.unquote(match.group(1))
+                else:
+                    actual_url = a.get_text(strip=True)
+                    
+                # Chỉ lấy các link chính của truyện trên 69shuba
+                if "69shuba" not in actual_url or "/txt/" in actual_url:
+                    continue
+                    
+                book_id_match = re.search(r'/book/(\d+)', actual_url) or re.search(r'69shuba\.com/(\d+)/?$', actual_url)
+                if not book_id_match:
+                    continue
+                    
+                book_id = book_id_match.group(1)
+                if book_id in seen_ids:
+                    continue
+                seen_ids.add(book_id)
+                
+                title_tag = a.find_previous("a", class_="result__a")
+                title = "Unknown"
+                if title_tag:
+                    title = title_tag.get_text(strip=True)
+                    title = re.sub(r'最新章节.*$', '', title)
+                    title = re.sub(r'无弹窗.*$', '', title)
+                    title = re.sub(r'-69书吧.*$', '', title)
+                    title = re.sub(r'[_,\s]+$', '', title)
+                    title = title.strip()
+                
+                results.append(BookSearchResult(
+                    book_id=book_id,
+                    title=title,
+                    author="Unknown",
+                    book_url=f"{home_url}/book/{book_id}.htm",
+                    status="",
+                    latest_chapter=""
+                ))
+            return results
+        except Exception as e:
+            print(f"{Color.YELLOW}[WARN] Lỗi tìm kiếm qua DuckDuckGo: {e}. Đang thử công cụ khác...{Color.RESET}")
+            return []
+
+    def _search_via_yahoo(self, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện qua Yahoo Search (không lo CAPTCHA)."""
+        import urllib.request
+        import urllib.parse
+        from bs4 import BeautifulSoup
+        
+        try:
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(self.base_url)
+            domain = parsed.netloc
+            if domain.startswith("www."):
+                domain = domain[4:]
+            home_url = f"{parsed.scheme}://{parsed.netloc}"
+            
+            query = f"site:{domain} {keyword}"
+            url = "https://search.yahoo.com/search?p=" + urllib.parse.quote(query)
+            
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                }
+            )
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                html = response.read().decode("utf-8")
+                
+            soup = BeautifulSoup(html, "html.parser")
+            results = []
+            seen_ids = set()
+            
+            items = soup.select(".algo-title, .compTitle h3 a, #web a")
+            
+            for a in items:
+                href = a.get("href", "").strip()
+                if not href:
+                    continue
+                
+                match = re.search(r'/RU=([^/&]+)', href)
+                if match:
+                    actual_url = unquote(match.group(1))
+                else:
+                    actual_url = href
+                    
+                if "69shuba" not in actual_url or "/txt/" in actual_url:
+                    continue
+                    
+                book_id_match = re.search(r'/book/(\d+)', actual_url) or re.search(r'69shuba\.com/(\d+)/?$', actual_url)
+                if not book_id_match:
+                    continue
+                    
+                book_id = book_id_match.group(1)
+                if book_id in seen_ids:
+                    continue
+                seen_ids.add(book_id)
+                
+                title = a.get_text(strip=True)
+                title = re.sub(r'^.*?[›»]\s*(?:book\s*[›»]\s*)?\d*', '', title)
+                title = re.sub(r'^69shuba\.com', '', title)
+                title = re.sub(r'^https?://\S+', '', title)
+                title = re.sub(r'最新章节.*$', '', title)
+                title = re.sub(r'无弹窗.*$', '', title)
+                title = re.sub(r'-69书吧.*$', '', title)
+                title = re.sub(r'[_,\s]+$', '', title)
+                title = title.strip()
+                
+                results.append(BookSearchResult(
+                    book_id=book_id,
+                    title=title,
+                    author="Unknown",
+                    book_url=f"{home_url}/book/{book_id}.htm",
+                    status="",
+                    latest_chapter=""
+                ))
+            return results
+        except Exception as e:
+            print(f"{Color.YELLOW}[WARN] Lỗi tìm kiếm qua Yahoo: {e}. Đang chuyển sang Selenium...{Color.RESET}")
+            return []
+
+    def search_book(self, driver: Any, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện theo từ khóa, ưu tiên DuckDuckGo -> Yahoo, fallback sang Selenium POST form."""
+        # 1. Thử tìm nhanh qua DuckDuckGo để tránh Cloudflare Turnstile
+        ddg_results = self._search_via_ddg(keyword)
+        if ddg_results:
+            return ddg_results
+            
+        # 2. Thử tìm qua Yahoo Search
+        yahoo_results = self._search_via_yahoo(keyword)
+        if yahoo_results:
+            return yahoo_results
+            
+        # 3. Nếu các công cụ tìm kiếm khác đều thất bại, chạy Selenium POST form
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(self.base_url)
+            home_url = f"{parsed.scheme}://{parsed.netloc}"
+            
+            driver.get(home_url)
+            self._wait_cloudflare(driver, max_wait=30)
+            
+            driver.execute_script('''
+                var form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/modules/article/search.php';
+                var input = document.createElement('input');
+                input.name = 'searchkey';
+                input.value = arguments[0];
+                form.appendChild(input);
+                var input2 = document.createElement('input');
+                input2.name = 'searchtype';
+                input2.value = 'all';
+                form.appendChild(input2);
+                document.body.appendChild(form);
+                form.submit();
+            ''', keyword)
+            
+            self._wait_cloudflare(driver, max_wait=30)
+            
+            current_url = driver.current_url
+            if "/book/" in current_url:
+                html = driver.page_source
+                soup = BeautifulSoup(html, "html.parser")
+                
+                title = "Unknown"
+                author = "Unknown"
+                
+                title_el = soup.select_one("div.booknav2 h1 a, div.booknav2 h1, h1")
+                if title_el:
+                    title = title_el.get_text(strip=True)
+                
+                author_el = soup.select_one("div.booknav2 p a, div.booknav2 p, p.author")
+                if author_el:
+                    author_text = author_el.get_text(strip=True)
+                    author = author_text.replace("作者：", "").strip()
+                    
+                book_id_match = re.search(r'/book/(\d+)', current_url)
+                if book_id_match:
+                    book_id = book_id_match.group(1)
+                    book_url = f"{home_url}/book/{book_id}.htm"
+                    return [BookSearchResult(
+                        book_id=book_id,
+                        title=title,
+                        author=author,
+                        book_url=book_url,
+                        status="",
+                        latest_chapter="",
+                    )]
+            
+            html = driver.page_source
+            soup = BeautifulSoup(html, "html.parser")
+            results = []
+            
+            items = soup.select("div.newbox > ul > li")
+            if not items:
+                items = soup.select("div.newbox ul li")
+            
+            if items:
+                for item in items:
+                    title_a = item.select_one("h3 a, a.bookname, h3 > a")
+                    if not title_a:
+                        continue
+                    href = title_a.get("href", "")
+                    title = title_a.get_text(strip=True)
+                    
+                    author_el = item.select_one("div.btm a, .author, span.author")
+                    author = author_el.get_text(strip=True) if author_el else "Unknown"
+                    
+                    status_el = item.select_one(".status, span.status")
+                    status = status_el.get_text(strip=True) if status_el else ""
+                    
+                    book_id_match = re.search(r'/book/(\d+)', href)
+                    if book_id_match:
+                        book_id = book_id_match.group(1)
+                        book_url = f"{home_url}/book/{book_id}.htm"
+                        results.append(BookSearchResult(
+                            book_id=book_id,
+                            title=title,
+                            author=author,
+                            book_url=book_url,
+                            status=status
+                        ))
+            
+            if not results:
+                rows = soup.select("table.grid tr")
+                for row in rows[1:]:
+                    cols = row.select("td")
+                    if len(cols) >= 2:
+                        title_a = cols[0].select_one("a")
+                        if title_a:
+                            href = title_a.get("href", "")
+                            title = title_a.get_text(strip=True)
+                            author = cols[2].get_text(strip=True) if len(cols) > 2 else "Unknown"
+                            
+                            book_id_match = re.search(r'/book/(\d+)', href)
+                            if book_id_match:
+                                book_id = book_id_match.group(1)
+                                book_url = f"{home_url}/book/{book_id}.htm"
+                                results.append(BookSearchResult(
+                                    book_id=book_id,
+                                    title=title,
+                                    author=author,
+                                    book_url=book_url,
+                                    status=""
+                                ))
+                                
+            if not results:
+                items = soup.select(".booklist .bookinfo, .booklist li, .book-item")
+                for item in items:
+                    title_a = item.select_one("a.bookname, h4 a, .title a, a")
+                    if not title_a:
+                        continue
+                    href = title_a.get("href", "")
+                    title = title_a.get_text(strip=True)
+                    
+                    author_el = item.select_one(".author, span")
+                    author = author_el.get_text(strip=True) if author_el else "Unknown"
+                    
+                    book_id_match = re.search(r'/book/(\d+)', href)
+                    if book_id_match:
+                        book_id = book_id_match.group(1)
+                        book_url = f"{home_url}/book/{book_id}.htm"
+                        results.append(BookSearchResult(
+                            book_id=book_id,
+                            title=title,
+                            author=author,
+                            book_url=book_url,
+                            status=""
+                        ))
+            
+            seen_book_ids = set()
+            unique_results = []
+            for r in results:
+                if r.book_id not in seen_book_ids:
+                    seen_book_ids.add(r.book_id)
+                    unique_results.append(r)
+                    
+            return unique_results[:20]
+        except Exception as e:
+            print(f"{Color.RED}[✗] Lỗi khi tìm kiếm truyện qua Selenium: {e}{Color.RESET}")
+            return []
+
+    def get_catalog(self, driver: Any, book_url: str) -> list[ChapterInfo]:
+        """Lấy mục lục chương từ trang truyện."""
+        from urllib.parse import urljoin, urlparse
+        try:
+            driver.get(book_url)
+            self._wait_cloudflare(driver, max_wait=30)
+            
+            html = driver.page_source
+            soup = BeautifulSoup(html, "html.parser")
+            
+            catalog_selectors = [
+                ".catalog > ul > li > a",
+                ".catalog ul li a",
+                "#catalog li a",
+                ".mulu_list li a",
+                ".mu_contain ul li a",
+                ".listmain dd a"
+            ]
+            
+            chapter_links = []
+            for selector in catalog_selectors:
+                found = soup.select(selector)
+                if found and len(found) >= 5:
+                    chapter_links = found
+                    break
+                    
+            # Fallback: nếu không thấy catalog, thử URL /{book_id}/
+            if not chapter_links:
+                book_id_match = re.search(r'/book/(\d+)', book_url)
+                if book_id_match:
+                    book_id = book_id_match.group(1)
+                    parsed = urlparse(book_url)
+                    alt_catalog_url = f"{parsed.scheme}://{parsed.netloc}/{book_id}/"
+                    driver.get(alt_catalog_url)
+                    self._wait_cloudflare(driver, max_wait=15)
+                    html = driver.page_source
+                    soup = BeautifulSoup(html, "html.parser")
+                    
+                    for selector in catalog_selectors:
+                        found = soup.select(selector)
+                        if found and len(found) >= 5:
+                            chapter_links = found
+                            break
+                            
+            if not chapter_links:
+                return []
+                
+            chapters = []
+            seen_ids = set()
+            index = 0
+            
+            for a_tag in chapter_links:
+                href = a_tag.get("href", "").strip()
+                title = a_tag.get_text(strip=True)
+                if not href or not title:
+                    continue
+                    
+                chapter_url = urljoin(book_url, href)
+                if "/txt/" not in chapter_url:
+                    continue
+                    
+                id_match = re.search(r'/txt/\d+/(\d+)', chapter_url)
+                if not id_match:
+                    continue
+                    
+                chapter_id = id_match.group(1)
+                if chapter_id in seen_ids:
+                    continue
+                seen_ids.add(chapter_id)
+                
+                index += 1
+                chapters.append(ChapterInfo(
+                    chapter_id=chapter_id,
+                    title=title,
+                    chapter_url=chapter_url,
+                    index=index
+                ))
+                
+            # Kiểm tra thứ tự ngược (mới nhất ở đầu)
+            if len(chapters) >= 2:
+                try:
+                    first_id = int(chapters[0].chapter_id)
+                    last_id = int(chapters[-1].chapter_id)
+                    if first_id > last_id:
+                        chapters.reverse()
+                        for i, ch in enumerate(chapters, 1):
+                            ch.index = i
+                except ValueError:
+                    pass
+                    
+            return chapters
+        except Exception as e:
+            print(f"{Color.RED}[✗] Lỗi khi lấy mục lục: {e}{Color.RESET}")
+            return []
+
 

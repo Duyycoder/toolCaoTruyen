@@ -90,27 +90,21 @@ def get_user_input() -> Tuple[str, int, int, int, str, str]:
         if user_base_url:
             base_url = user_base_url.rstrip("/")
 
-    # --- Nhập ID Truyện (bắt buộc) ---
-    while True:
-        story_id_str = input(
-            f"{Color.YELLOW}[?] ID Truyện "
-            f"{Color.DIM}(ví dụ: 90438){Color.RESET}: "
-        ).strip()
-        if story_id_str.isdigit() and int(story_id_str) > 0:
-            story_id = int(story_id_str)
-            break
-        print(f"{Color.RED}[!] ID Truyện phải là số nguyên dương.{Color.RESET}")
-
-    # --- Nhập ID Chương bắt đầu (bắt buộc) ---
-    while True:
-        chapter_id_str = input(
-            f"{Color.YELLOW}[?] ID Chương bắt đầu "
-            f"{Color.DIM}(ví dụ: 40755198){Color.RESET}: "
-        ).strip()
-        if chapter_id_str.isdigit() and int(chapter_id_str) > 0:
-            start_chapter_id = int(chapter_id_str)
-            break
-        print(f"{Color.RED}[!] ID Chương phải là số nguyên dương.{Color.RESET}")
+    # --- Chọn chế độ nhập truyện (nếu nguồn hỗ trợ tìm kiếm) ---
+    supports_search = source in ("69shuba",)
+    
+    if supports_search:
+        print(f"\n{Color.YELLOW}[?] Cách nhập thông tin truyện:{Color.RESET}")
+        print(f"    {Color.CYAN}1{Color.RESET} — Nhập ID truyện và ID chương bắt đầu thủ công")
+        print(f"    {Color.CYAN}2{Color.RESET} — Tìm kiếm truyện theo tên (khuyên dùng)")
+        
+        mode = input(f"{Color.YELLOW}[?] Chọn (1/2, mặc định: 2): {Color.RESET}").strip()
+        if mode == "1":
+            story_id, start_chapter_id = _input_ids_manual()
+        else:
+            story_id, start_chapter_id = _search_and_select(source, base_url)
+    else:
+        story_id, start_chapter_id = _input_ids_manual()
 
     # --- Nhập số lượng chương ---
     while True:
@@ -189,6 +183,224 @@ def main() -> None:
     except Exception as e:
         print(f"\n{Color.RED}[✗] Lỗi: {e}{Color.RESET}")
         sys.exit(1)
+
+
+def _input_ids_manual() -> Tuple[int, int]:
+    """Nhập ID truyện và ID chương bắt đầu thủ công."""
+    while True:
+        story_id_str = input(
+            f"{Color.YELLOW}[?] ID Truyện "
+            f"{Color.DIM}(ví dụ: 90438){Color.RESET}: "
+        ).strip()
+        if story_id_str.isdigit() and int(story_id_str) > 0:
+            story_id = int(story_id_str)
+            break
+        print(f"{Color.RED}[!] ID Truyện phải là số nguyên dương.{Color.RESET}")
+
+    while True:
+        chapter_id_str = input(
+            f"{Color.YELLOW}[?] ID Chương bắt đầu "
+            f"{Color.DIM}(ví dụ: 40755198){Color.RESET}: "
+        ).strip()
+        if chapter_id_str.isdigit() and int(chapter_id_str) > 0:
+            start_chapter_id = int(chapter_id_str)
+            break
+        print(f"{Color.RED}[!] ID Chương phải là số nguyên dương.{Color.RESET}")
+        
+    return story_id, start_chapter_id
+
+
+def _search_and_select(source: str, base_url: str) -> Tuple[int, int]:
+    """Tìm kiếm truyện theo tên → chọn truyện → tải mục lục → chọn chương."""
+    from sources.book_search import BookSearcher
+    from core.intelligent_search import translate_query_to_chinese, generate_alternative_chinese_names
+    
+    parser = get_source(source, base_url)
+    
+    with BookSearcher(parser) as searcher:
+        while True:
+            keyword = input(
+                f"\n{Color.YELLOW}[?] Nhập tên truyện cần tìm "
+                f"{Color.DIM}(Tiếng Việt hoặc Tiếng Trung){Color.RESET}: "
+            ).strip()
+            
+            if not keyword:
+                print(f"{Color.RED}[!] Tên truyện không được để trống.{Color.RESET}")
+                continue
+                
+            # Dịch sang tiếng Trung nếu nhập tiếng Việt
+            translated_keyword = translate_query_to_chinese(keyword)
+            if translated_keyword != keyword:
+                print(f"{Color.CYAN}[i] Đã chuyển ngữ truy vấn: '{keyword}' -> '{translated_keyword}'{Color.RESET}")
+                
+            print(f"\n{Color.BLUE}[⏳] Đang tìm kiếm '{translated_keyword}' trên {source}...{Color.RESET}")
+            results = searcher.search(translated_keyword)
+            
+            # Thử lại tối đa 10 lần bằng LLM nếu không có kết quả
+            failed_attempts = [keyword]
+            if translated_keyword != keyword:
+                failed_attempts.append(translated_keyword)
+                
+            retry_count = 0
+            max_retries = 10
+            
+            while not results and retry_count < max_retries:
+                retry_count += 1
+                print(f"{Color.YELLOW}[!] Không tìm thấy kết quả cho '{translated_keyword}'.{Color.RESET}")
+                print(f"{Color.BLUE}[⏳] Lần thử {retry_count}/{max_retries}: LLM đang tìm tên thay thế...{Color.RESET}")
+                
+                alternatives = generate_alternative_chinese_names(keyword, failed_attempts)
+                if not alternatives:
+                    print(f"{Color.RED}[!] LLM không thể tìm thêm tên thay thế nào.{Color.RESET}")
+                    break
+                    
+                print(f"{Color.CYAN}[i] Các từ khóa gợi ý: {', '.join(alternatives)}{Color.RESET}")
+                
+                found_any = False
+                for alt in alternatives:
+                    if alt in failed_attempts:
+                        continue
+                    failed_attempts.append(alt)
+                    print(f"    - Đang thử từ khóa: '{alt}'...")
+                    results = searcher.search(alt)
+                    if results:
+                        print(f"{Color.GREEN}[✓] Tìm thấy truyện với tên gợi ý: '{alt}'!{Color.RESET}")
+                        found_any = True
+                        break
+                if found_any:
+                    break
+                    
+            if not results:
+                print(f"\n{Color.RED}[✗] Đã thử {max_retries} lần tìm kiếm bằng tên truyện vẫn không tìm thấy kết quả.{Color.RESET}")
+                retry_choice = input(
+                    f"{Color.YELLOW}[?] Bạn muốn làm gì? (1: Tìm từ khóa khác, 2: Nhập ID thủ công, mặc định: 2): {Color.RESET}"
+                ).strip()
+                if retry_choice == "1":
+                    continue
+                else:
+                    return _input_ids_manual()
+                    
+            selected = _display_search_results(results)
+            if selected is None:
+                continue
+                
+            print(f"\n{Color.BLUE}[⏳] Đang tải mục lục chương...{Color.RESET}")
+            catalog = searcher.get_catalog(selected.book_url)
+            
+            if not catalog:
+                print(f"{Color.YELLOW}[!] Không lấy được mục lục. Hãy nhập ID chương thủ công.{Color.RESET}")
+                story_id = int(selected.book_id)
+                _, start_chapter_id = _input_ids_manual()
+                return story_id, start_chapter_id
+                
+            return _display_catalog_and_choose(selected, catalog)
+
+
+def _display_search_results(results: list) -> Optional[Any]:
+    """Hiển thị danh sách kết quả tìm kiếm và trả về truyện được chọn."""
+    from typing import Any
+    print(f"\n{Color.CYAN}{'═' * 60}{Color.RESET}")
+    print(f"{Color.BOLD}   📚  KẾT QUẢ TÌM KIẾM ({len(results)} truyện){Color.RESET}")
+    print(f"{Color.CYAN}{'═' * 60}{Color.RESET}\n")
+    
+    for i, r in enumerate(results, 1):
+        print(f"  {Color.CYAN}[{i}]{Color.RESET} {Color.BOLD}{r.title}{Color.RESET}")
+        info_parts = [f"Tác giả: {r.author}"]
+        info_parts.append(f"ID: {r.book_id}")
+        if r.status:
+            info_parts.append(r.status)
+        print(f"      {Color.DIM}{' | '.join(info_parts)}{Color.RESET}\n")
+        
+    print(f"{Color.CYAN}{'─' * 60}{Color.RESET}")
+    
+    while True:
+        choice = input(
+            f"{Color.YELLOW}[?] Chọn truyện (1-{len(results)}), "
+            f"hoặc 's' để tìm từ khóa khác: {Color.RESET}"
+        ).strip().lower()
+        
+        if choice == 's':
+            return None
+            
+        if choice.isdigit() and 1 <= int(choice) <= len(results):
+            return results[int(choice) - 1]
+            
+        print(f"{Color.RED}[!] Lựa chọn không hợp lệ.{Color.RESET}")
+
+
+def _display_catalog_and_choose(selected: Any, catalog: list) -> Tuple[int, int]:
+    """Hiển thị mục lục và cho người dùng chọn chương bắt đầu."""
+    total = len(catalog)
+    
+    print(f"\n{Color.CYAN}{'═' * 60}{Color.RESET}")
+    print(f"{Color.BOLD}   📋  MỤC LỤC — {selected.title} ({total} chương){Color.RESET}")
+    print(f"{Color.CYAN}{'═' * 60}{Color.RESET}\n")
+    
+    def _print_chapter(ch):
+        print(f"  {Color.DIM}{ch.index:>4}{Color.RESET} | "
+              f"ID: {Color.CYAN}{ch.chapter_id}{Color.RESET} | "
+              f"{ch.title}")
+              
+    if total <= 30:
+        for ch in catalog:
+            _print_chapter(ch)
+    else:
+        for ch in catalog[:15]:
+            _print_chapter(ch)
+        print(f"\n  {Color.DIM}... (ẩn {total - 25} chương) ...{Color.RESET}\n")
+        for ch in catalog[-10:]:
+            _print_chapter(ch)
+            
+    print(f"\n{Color.CYAN}{'─' * 60}{Color.RESET}")
+    
+    if total > 30:
+        show_all = input(
+            f"{Color.DIM}[?] Nhập 'all' để xem toàn bộ mục lục, "
+            f"Enter để tiếp tục: {Color.RESET}"
+        ).strip().lower()
+        if show_all == 'all':
+            for ch in catalog:
+                _print_chapter(ch)
+            print(f"\n{Color.CYAN}{'─' * 60}{Color.RESET}")
+            
+    id_to_chapter = {ch.chapter_id: ch for ch in catalog}
+    index_to_chapter = {ch.index: ch for ch in catalog}
+    
+    while True:
+        user_input = input(
+            f"\n{Color.YELLOW}[?] Chương bắt đầu cào "
+            f"{Color.DIM}(nhập số thứ tự STT 1-{total} hoặc paste Chapter ID){Color.RESET}: "
+        ).strip()
+        
+        if not user_input.isdigit():
+            print(f"{Color.RED}[!] Vui lòng nhập số.{Color.RESET}")
+            continue
+            
+        num = int(user_input)
+        
+        if num <= total and num in index_to_chapter:
+            chosen = index_to_chapter[num]
+            start_chapter_id = int(chosen.chapter_id)
+            print(f"  {Color.GREEN}→ Đã chọn STT {num}: "
+                  f"{chosen.title} (ID: {chosen.chapter_id}){Color.RESET}")
+        elif str(num) in id_to_chapter:
+            chosen = id_to_chapter[str(num)]
+            start_chapter_id = num
+            print(f"  {Color.GREEN}→ Đã chọn Chapter ID {num}: "
+                  f"{chosen.title} (STT: {chosen.index}){Color.RESET}")
+        else:
+            print(f"{Color.YELLOW}[!] Không tìm thấy trong mục lục.{Color.RESET}")
+            confirm = input(
+                f"{Color.YELLOW}    Bạn có chắc muốn dùng Chapter ID {num}? (y/n): {Color.RESET}"
+            ).strip().lower()
+            if confirm in ('y', 'yes', ''):
+                start_chapter_id = num
+            else:
+                continue
+        break
+        
+    story_id = int(selected.book_id)
+    return story_id, start_chapter_id
 
 
 if __name__ == "__main__":

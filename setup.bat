@@ -73,14 +73,16 @@ echo    CHON ENGINE DICH THUAT MAC DINH
 echo ============================================================
 echo [1] Ollama - Dich Local Offline, can card do hoa roi tu 6GB VRAM tro len
 echo [2] Gemini API - Dich Online toc do cao, can Gemini API Key
-echo [3] Su dung ca hai
+echo [3] Gemini API (Offline/Local) - Dich qua cookies, tu dong chay server
+echo [4] Su dung tat ca cac option tren
 echo ------------------------------------------------------------
-set /p CHOICE="Nhap lua chon cua ban [1, 2, 3] - Mac dinh la 3: "
+set /p CHOICE="Nhap lua chon cua ban [1, 2, 3, 4] - Mac dinh la 4: "
 
-if "%CHOICE%"=="" set CHOICE=3
+if "%CHOICE%"=="" set CHOICE=4
 
 if "%CHOICE%"=="2" goto :setup_gemini_only
-if "%CHOICE%"=="3" goto :setup_both
+if "%CHOICE%"=="3" goto :setup_gemini_offline
+if "%CHOICE%"=="4" goto :setup_both
 goto :setup_ollama_only
 
 :setup_gemini_only
@@ -95,6 +97,21 @@ if %errorlevel% neq 0 (
 echo.
 echo [OK] Da cau hinh default engine la Gemini API.
 echo [INFO] Da qua buoc tai model Ollama 4.7GB de tiet kiem dung luong.
+goto :setup_complete
+
+:setup_gemini_offline
+echo.
+echo [INFO] Da chon Gemini API (Offline/Local) lam Engine mac dinh.
+echo [INFO] Sau khi setup xong, ban can mo file "Gemini-API\cookies.json" va dien cookies.
+.venv\Scripts\python setup_helper.py gemini_api ""
+if %errorlevel% neq 0 (
+    echo [ERROR] Loi khi cap nhat cau hinh.
+    pause
+    exit /b 1
+)
+echo.
+echo [OK] Da cau hinh default engine la Gemini API Offline/Local.
+echo [INFO] Bo qua buoc tai model Ollama de tiet kiem dung luong o dia.
 goto :setup_complete
 
 :setup_both

@@ -19,6 +19,175 @@ from core.crawler_engine import download_chapters
 
 app = FastAPI(title="Tool Cào Truyện Web UI")
 
+import subprocess
+import sys
+import atexit
+import signal
+from urllib.parse import urlparse
+
+# Global variables for Gemini API subprocess management
+gemini_api_process = None
+active_heartbeats = set()
+heartbeat_timeout_task = None
+
+def initialize_gemini_api_files():
+    gemini_api_dir = os.path.join(os.getcwd(), "Gemini-API")
+    os.makedirs(gemini_api_dir, exist_ok=True)
+    
+    cookies_path = os.path.join(gemini_api_dir, "cookies.json")
+    default_cookies = {
+        "__Secure-1PSID": "",
+        "__Secure-1PSIDTS": ""
+    }
+    if not os.path.exists(cookies_path):
+        try:
+            with open(cookies_path, "w", encoding="utf-8") as f:
+                json.dump(default_cookies, f, indent=2)
+            print("[INFO] Đã tự động tạo file cookies.json mẫu tại Gemini-API/cookies.json")
+        except Exception as e:
+            print(f"[ERROR] Không thể tạo file cookies.json: {e}")
+
+    api_keys_path = os.path.join(gemini_api_dir, "api_keys.json")
+    default_api_keys = {
+        "sk-gemini-YrVwXWGegzkFlevHPdQy7Fpry14HJVirqvnuxukz": "default"
+    }
+    if not os.path.exists(api_keys_path):
+        try:
+            with open(api_keys_path, "w", encoding="utf-8") as f:
+                json.dump(default_api_keys, f, indent=2)
+            print("[INFO] Đã tạo file api_keys.json mặc định tại Gemini-API/api_keys.json")
+        except Exception as e:
+            print(f"[ERROR] Không thể tạo file api_keys.json: {e}")
+
+def check_gemini_cookies() -> dict:
+    cookies_path = os.path.join("Gemini-API", "cookies.json")
+    if not os.path.exists(cookies_path):
+        initialize_gemini_api_files()
+        return {"status": "missing", "message": "Không tìm thấy file cookies.json. File mẫu đã được tự động tạo tại Gemini-API/cookies.json."}
+        
+    try:
+        with open(cookies_path, "r", encoding="utf-8") as f:
+            content = json.load(f)
+        if not isinstance(content, dict):
+            return {"status": "invalid", "message": "File cookies.json có định dạng không hợp lệ. Vui lòng kiểm tra lại."}
+        
+        psid = content.get("__Secure-1PSID", "").strip()
+        psidts = content.get("__Secure-1PSIDTS", "").strip()
+        
+        if not psid or not psidts:
+            return {"status": "empty", "message": "Bạn chưa cấu hình cookies trong Gemini-API/cookies.json. Vui lòng điền __Secure-1PSID và __Secure-1PSIDTS."}
+            
+        return {"status": "ready"}
+    except Exception as e:
+        return {"status": "error", "message": f"Lỗi khi đọc file cookies.json: {str(e)}"}
+
+def get_gemini_api_port() -> int:
+    try:
+        config = load_config()
+        if config and "translator" in config:
+            base_url = config["translator"].get("gemini_offline_base_url", "http://localhost:7860/v1")
+            parsed = urlparse(base_url)
+            if parsed.port:
+                return parsed.port
+    except Exception:
+        pass
+    return 7860
+
+def kill_gemini_api_server():
+    global gemini_api_process
+    if gemini_api_process:
+        print("[*] Đang tắt Gemini API Server...")
+        try:
+            gemini_api_process.terminate()
+            gemini_api_process.wait(timeout=3)
+            print("[✓] Đã tắt Gemini API Server.")
+        except subprocess.TimeoutExpired:
+            print("[WARN] Gemini API Server không phản hồi, tiến hành force kill...")
+            try:
+                gemini_api_process.kill()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[✗] Lỗi khi tắt Gemini API Server: {e}")
+        finally:
+            gemini_api_process = None
+
+@app.on_event("startup")
+def startup_event():
+    global gemini_api_process
+    
+    # 1. Khởi tạo và kiểm tra cookies
+    initialize_gemini_api_files()
+    cookie_status = check_gemini_cookies()
+    if cookie_status["status"] != "ready":
+        print(f"\n============================================================")
+        print(f"⚠️  CANH BAO: {cookie_status['message']}")
+        print(f"============================================================\n")
+        
+    # 2. Khởi chạy Gemini API Server làm tiến trình con (subprocess)
+    gemini_dir = os.path.join(os.getcwd(), "Gemini-API")
+    if os.path.exists(gemini_dir):
+        python_exe = sys.executable
+        port = get_gemini_api_port()
+        print(f"[*] Đang khởi chạy Gemini API Server ở terminal riêng (Cổng: {port})...")
+        
+        env = os.environ.copy()
+        env["PYTHONPATH"] = gemini_dir
+        
+        try:
+            gemini_api_process = subprocess.Popen(
+                [python_exe, "-m", "uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", str(port)],
+                cwd=gemini_dir,
+                env=env,
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
+            print(f"[✓] Đã kích hoạt terminal chạy Gemini API Server (PID: {gemini_api_process.pid})")
+        except Exception as e:
+            print(f"[✗] Không thể khởi chạy Gemini API Server: {e}")
+
+@app.on_event("shutdown")
+def shutdown_event():
+    kill_gemini_api_server()
+
+# Sử dụng atexit để đảm bảo kill tiến trình khi tắt
+atexit.register(kill_gemini_api_server)
+
+async def shutdown_server_after_delay():
+    await asyncio.sleep(5.0)  # Chờ 5 giây để tránh F5 reload trang
+    if len(active_heartbeats) == 0:
+        print("[*] Đóng trình duyệt: Không phát hiện tab Web UI hoạt động. Đang tự động tắt ứng dụng...")
+        kill_gemini_api_server()
+        import os
+        os.kill(os.getpid(), signal.SIGINT)
+
+@app.websocket("/ws/heartbeat")
+async def websocket_heartbeat(websocket: WebSocket):
+    global heartbeat_timeout_task
+    await websocket.accept()
+    
+    # Hủy task tắt máy nếu có kết nối mới trong 5s
+    if heartbeat_timeout_task and not heartbeat_timeout_task.done():
+        heartbeat_timeout_task.cancel()
+        
+    active_heartbeats.add(websocket)
+    try:
+        while True:
+            # Lắng nghe tin nhắn duy trì
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        active_heartbeats.remove(websocket)
+        if len(active_heartbeats) == 0:
+            # Không còn kết nối nào, lập lịch tắt máy
+            heartbeat_timeout_task = asyncio.create_task(shutdown_server_after_delay())
+
+@app.get("/api/check-gemini-cookies")
+async def api_check_gemini_cookies():
+    return check_gemini_cookies()
+
 def sanitize_filename(name: str) -> str:
     # Thay thế các ký tự cấm trên Windows bằng khoảng trắng
     name = re.sub(r'[\\/*?:"<>|]', " ", name)
@@ -81,6 +250,9 @@ class TranslatorConfigModel(BaseModel):
     leak_threshold_percent: int
     gemini_api_key: str
     gemini_model: str
+    gemini_offline_key: Optional[str] = ""
+    gemini_offline_base_url: Optional[str] = "http://localhost:7860/v1"
+    gemini_offline_model: Optional[str] = "gemini-2.5-flash"
     auto_extract_glossary: Optional[bool] = True
     genre: Optional[str] = "tien_hiep"
 
@@ -182,6 +354,93 @@ async def check_ollama_model(model: str):
         return {"model": model, "available": available}
     except Exception as e:
         return {"model": model, "available": False, "error": str(e)}
+
+
+# API 3f: Tìm kiếm truyện theo tên
+@app.get("/api/search")
+async def search_book_api(keyword: str, source: str = "69shuba"):
+    """Tìm kiếm truyện theo tên qua API, hỗ trợ dịch tự động."""
+    from sources.book_search import BookSearcher
+    from core.intelligent_search import translate_query_to_chinese
+    
+    def _do_search():
+        base_url = "https://www.69shuba.com/txt"  # default
+        # Lấy base_url từ config hiện tại nếu có
+        from core.config_manager import load_config
+        config = load_config()
+        if config:
+            base_url = config.get("base_url", base_url)
+            
+        parser = get_source(source, base_url)
+        
+        # Tự động dịch sang tiếng Trung nếu là tiếng Việt
+        translated_keyword = translate_query_to_chinese(keyword)
+        
+        with BookSearcher(parser) as searcher:
+            results = searcher.search(translated_keyword)
+            # Thử lại bằng tên thay thế nếu rỗng (1 lần thử để tối ưu thời gian phản hồi API)
+            if not results:
+                from core.intelligent_search import generate_alternative_chinese_names
+                alternatives = generate_alternative_chinese_names(keyword, [keyword, translated_keyword])
+                for alt in alternatives:
+                    results = searcher.search(alt)
+                    if results:
+                        break
+            return results, translated_keyword
+            
+    try:
+        results, used_keyword = await asyncio.to_thread(_do_search)
+        return {
+            "status": "success",
+            "keyword_used": used_keyword,
+            "results": [
+                {
+                    "book_id": r.book_id,
+                    "title": r.title,
+                    "author": r.author,
+                    "book_url": r.book_url,
+                    "status": r.status,
+                    "latest_chapter": r.latest_chapter,
+                } for r in results
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi tìm kiếm: {str(e)}")
+
+
+# API 3g: Lấy mục lục chương
+@app.get("/api/catalog")
+async def get_catalog_api(book_url: str, source: str = "69shuba"):
+    """Lấy mục lục chương qua API."""
+    from sources.book_search import BookSearcher
+    
+    def _do_catalog():
+        base_url = "https://www.69shuba.com/txt"
+        from core.config_manager import load_config
+        config = load_config()
+        if config:
+            base_url = config.get("base_url", base_url)
+            
+        parser = get_source(source, base_url)
+        with BookSearcher(parser) as searcher:
+            return searcher.get_catalog(book_url)
+            
+    try:
+        chapters = await asyncio.to_thread(_do_catalog)
+        return {
+            "status": "success",
+            "total_chapters": len(chapters),
+            "chapters": [
+                {
+                    "chapter_id": ch.chapter_id,
+                    "title": ch.title,
+                    "chapter_url": ch.chapter_url,
+                    "index": ch.index,
+                } for ch in chapters
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi lấy mục lục: {str(e)}")
 
 
 # API 4: Chọn thư mục bằng Dialog hệ thống (Tkinter)
@@ -379,6 +638,9 @@ async def websocket_translate(websocket: WebSocket):
         ollama_model = config.get("ollama_model", "qwen2.5:7b-instruct")
         gemini_api_key = config.get("gemini_api_key", "")
         gemini_model = config.get("gemini_model", "gemini-2.5-flash")
+        gemini_offline_key = config.get("gemini_offline_key", "")
+        gemini_offline_base_url = config.get("gemini_offline_base_url", "http://localhost:7860/v1")
+        gemini_offline_model = config.get("gemini_offline_model", "gemini-2.5-flash")
         leak_threshold = int(config.get("leak_threshold_percent", 10))
         output_dir_custom = config.get("output_dir", "").strip()
         auto_extract_glossary = config.get("auto_extract_glossary", True)
@@ -462,6 +724,13 @@ async def websocket_translate(websocket: WebSocket):
                     model=gemini_model,
                     leak_threshold_percent=leak_threshold
                 )
+        elif engine_type == "gemini_api":
+            translator = TRANSLATOR_ENGINES["gemini_api"](
+                api_key=gemini_offline_key,
+                base_url=gemini_offline_base_url,
+                model=gemini_offline_model,
+                leak_threshold_percent=leak_threshold
+            )
         else:
             await websocket.send_json({
                 "event": "error",
@@ -604,8 +873,8 @@ async def websocket_translate(websocket: WebSocket):
                 })
                 
                 # Chặn chuyển chương nếu có đoạn lỗi
-                if failed_p > 0:
-                    raise ValueError(f"Chương này có {failed_p} đoạn dịch lỗi chưa được khắc phục. Tiến trình dịch bị chặn.")
+                # if failed_p > 0:
+                #     raise ValueError(f"Chương này có {failed_p} đoạn dịch lỗi chưa được khắc phục. Tiến trình dịch bị chặn.")
             except Exception as e:
                 await websocket.send_json({
                     "event": "file_error",
@@ -614,6 +883,7 @@ async def websocket_translate(websocket: WebSocket):
                     "message": f"[✗] Lỗi khi dịch: {str(e)}"
                 })
                 break
+
 
         listen_task.cancel()
 

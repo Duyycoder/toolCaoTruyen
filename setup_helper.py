@@ -2,7 +2,39 @@ import os
 import sys
 import json
 
+def initialize_gemini_api_files():
+    gemini_api_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Gemini-API")
+    os.makedirs(gemini_api_dir, exist_ok=True)
+    
+    cookies_path = os.path.join(gemini_api_dir, "cookies.json")
+    default_cookies = {
+        "__Secure-1PSID": "",
+        "__Secure-1PSIDTS": ""
+    }
+    if not os.path.exists(cookies_path):
+        try:
+            with open(cookies_path, "w", encoding="utf-8") as f:
+                json.dump(default_cookies, f, indent=2)
+            print("[INFO] Đã tự động tạo file cookies.json mẫu tại Gemini-API/cookies.json")
+        except Exception as e:
+            print(f"[ERROR] Không thể tạo file cookies.json: {e}")
+
+    api_keys_path = os.path.join(gemini_api_dir, "api_keys.json")
+    default_api_keys = {
+        "sk-gemini-YrVwXWGegzkFlevHPdQy7Fpry14HJVirqvnuxukz": "default"
+    }
+    if not os.path.exists(api_keys_path):
+        try:
+            with open(api_keys_path, "w", encoding="utf-8") as f:
+                json.dump(default_api_keys, f, indent=2)
+            print("[INFO] Đã tạo file api_keys.json mặc định tại Gemini-API/api_keys.json")
+        except Exception as e:
+            print(f"[ERROR] Không thể tạo file api_keys.json: {e}")
+
 def main():
+    # Khởi tạo các file cấu hình cho Gemini API trước
+    initialize_gemini_api_files()
+    
     if len(sys.argv) < 2:
         print("Usage: python setup_helper.py <engine> [gemini_key]")
         sys.exit(1)

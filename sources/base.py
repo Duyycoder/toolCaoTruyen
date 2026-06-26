@@ -1,5 +1,25 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Any
+from dataclasses import dataclass
+
+@dataclass
+class BookSearchResult:
+    """Kết quả tìm kiếm 1 cuốn truyện."""
+    book_id: str          # ID truyện trên site (ví dụ: "47558")
+    title: str            # Tên truyện gốc
+    author: str           # Tên tác giả
+    book_url: str         # URL trang truyện đầy đủ
+    status: str = ""      # Trạng thái: "连载中" / "已完结"
+    latest_chapter: str = ""  # Tên chương mới nhất (nếu có)
+    cover_url: str = ""   # URL ảnh bìa (nếu có)
+
+@dataclass
+class ChapterInfo:
+    """Thông tin 1 chương trong mục lục."""
+    chapter_id: str       # ID chương (ví dụ: "30756382")
+    title: str            # Tên chương (ví dụ: "第1章 重生")
+    chapter_url: str      # URL đầy đủ tới trang đọc
+    index: int            # Thứ tự chương (1-based)
 
 class Color:
     """Mã màu ANSI cho output terminal."""
@@ -72,4 +92,21 @@ class BaseSourceParser(ABC):
             URL chương tiếp theo hoặc None.
         """
         return None
+
+    def search_book(self, driver: Any, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện theo từ khóa.
+        Subclass override nếu site hỗ trợ search.
+        Default: raise NotImplementedError."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} không hỗ trợ tìm kiếm theo tên."
+        )
+
+    def get_catalog(self, driver: Any, book_url: str) -> list[ChapterInfo]:
+        """Lấy mục lục chương từ trang truyện.
+        Subclass override nếu site hỗ trợ.
+        Default: raise NotImplementedError."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} không hỗ trợ lấy mục lục chương."
+        )
+
 

@@ -1,9 +1,11 @@
 from .ollama_translator import OllamaTranslator
 from .gemini_translator import GeminiTranslator
+from .gemini_api_translator import GeminiApiTranslator
 
 TRANSLATOR_ENGINES = {
     "ollama": OllamaTranslator,
     "gemini": GeminiTranslator,
+    "gemini_api": GeminiApiTranslator,
 }
 
 OLLAMA_MODELS = {
