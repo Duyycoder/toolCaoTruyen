@@ -133,6 +133,7 @@ def startup_event():
         
         env = os.environ.copy()
         env["PYTHONPATH"] = gemini_dir
+        env["PYTHONIOENCODING"] = "utf-8"
         
         try:
             gemini_api_process = subprocess.Popen(
