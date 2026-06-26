@@ -134,15 +134,15 @@ def save_to_markdown(
     safe_story_name = sanitize_filename(story_name)
     safe_chapter_name = sanitize_filename(chapter_name)
 
-    # Prefix số thứ tự để sắp xếp đúng (0001_, 0002_, ...)
-    filename = f"{chapter_index:04d}_{safe_chapter_name}.md"
+    # Tên file = tên chương (không có prefix số thứ tự)
+    filename = f"{safe_chapter_name}.md"
 
     # Tạo thư mục: {output_dir}/{tên_truyện}/
     story_dir = os.path.join(output_dir, safe_story_name)
     os.makedirs(story_dir, exist_ok=True)
 
-    # Format Markdown: heading + nội dung
-    md_content = f"# {chapter_name}\n\n{content}\n"
+    # Format Markdown: đếm thứ tự + heading + nội dung
+    md_content = f"Chương thứ {chapter_index}\n\n# {chapter_name}\n\n{content}\n"
 
     filepath = os.path.join(story_dir, filename)
     with open(filepath, "w", encoding="utf-8") as f:
@@ -252,14 +252,25 @@ def default_progress_callback(event_data: dict) -> None:
         print(f"{Color.CYAN}{'═' * 60}{Color.RESET}\n")
 
 
-def extract_chapter_id_from_url(url: str, fallback_id: int) -> int:
-    """Trích xuất ID chương từ URL chương truyện phục vụ cho callback hiển thị.
+def extract_chapter_id_from_url(url: str, fallback_id: Any) -> Any:
+    """Trích xuất ID chương hoặc phần định danh chương từ URL phục vụ cho callback hiển thị.
     KHÔNG được dùng trong bất kỳ điều kiện if/while nào quyết định luồng chạy.
     """
     try:
+        # Thử với 69shuba
         match = re.search(r"/txt/\d+/(\d+)", url)
         if match:
             return int(match.group(1))
+        
+        # Thử với metruyenchuvn: ví dụ: /nguoi-tren-van-nguoi/chuong-1-AoCo2t_YhnIh
+        match2 = re.search(r"/(chuong-\d+-[A-Za-z0-9_]+|chuong-\d+)", url)
+        if match2:
+            return match2.group(1)
+            
+        # Thử tìm phần cuối cùng của URL
+        parts = url.rstrip("/").split("/")
+        if parts:
+            return parts[-1]
     except Exception:
         pass
     return fallback_id
@@ -298,8 +309,13 @@ def download_chapters(
     total_attempted: int = 0
     reached_end: bool = False
 
-    # Khởi tạo URL chương đầu tiên từ ID người dùng nhập
-    current_url: str = parser.build_chapter_url(story_id, start_chapter_id)
+    # Khởi tạo URL chương đầu tiên từ ID người dùng nhập hoặc dùng trực tiếp nếu start_chapter_id là URL
+    if isinstance(start_chapter_id, str) and (start_chapter_id.startswith("http://") or start_chapter_id.startswith("https://")):
+        current_url: str = start_chapter_id
+    elif isinstance(story_id, str) and (story_id.startswith("http://") or story_id.startswith("https://")):
+        current_url: str = story_id
+    else:
+        current_url: str = parser.build_chapter_url(story_id, start_chapter_id)
     
     # Tập hợp các URL đã tải trong phiên này để chống lặp vô hạn
     visited_urls = set()

@@ -9,6 +9,7 @@
 # =============================================================================
 
 import os
+import re
 import sys
 from typing import Tuple
 
@@ -43,7 +44,9 @@ def get_user_input() -> Tuple[str, int, int, int, str, str]:
     base_url = DEFAULT_BASE_URL
     output_dir = DEFAULT_OUTPUT_DIR
     source = "69shuba"
+    url_mode = False
 
+    # --- Hỏi chế độ cào hoặc dùng cấu hình cũ ---
     if config:
         prev_base_url = config.get("base_url", DEFAULT_BASE_URL)
         prev_output_dir = config.get("output_dir", DEFAULT_OUTPUT_DIR)
@@ -55,56 +58,111 @@ def get_user_input() -> Tuple[str, int, int, int, str, str]:
         print(f"    Thư mục   : {Color.CYAN}{prev_output_dir}{Color.RESET}")
 
         reuse = input(
-            f"\n{Color.YELLOW}[?] Dùng lại cấu hình trên? (Y/n): {Color.RESET}"
+            f"\n{Color.YELLOW}[?] Dùng lại cấu hình trên? (Y/n) hoặc gõ 'url' để dán link chương trực tiếp: {Color.RESET}"
         ).strip().lower()
         if reuse in ("", "y", "yes"):
             base_url = prev_base_url
             output_dir = prev_output_dir
             source = prev_source
             print(f"{Color.GREEN}[✓] Đã tải lại cấu hình.{Color.RESET}\n")
+        elif reuse == "url":
+            print(f"{Color.DIM}[i] Chuyển sang chế độ dán URL trực tiếp.{Color.RESET}\n")
+            config = None
+            # Đánh dấu là chạy bằng dán URL
+            url_mode = True
         else:
             print(f"{Color.DIM}[i] Bỏ qua cấu hình cũ. Nhập cấu hình mới:{Color.RESET}\n")
             config = None
-
-    # --- Nhập Nguồn truyện (nếu chưa dùng config cũ) ---
-    if not config:
-        supported_list = ", ".join(SOURCES.keys())
-        while True:
-            user_source = input(
-                f"{Color.YELLOW}[?] Chọn nguồn truyện "
-                f"{Color.DIM}(hỗ trợ: {supported_list}, mặc định: 69shuba){Color.RESET}: "
-            ).strip().lower()
-            if not user_source:
-                source = "69shuba"
-                break
-            if user_source in SOURCES:
-                source = user_source
-                break
-            print(f"{Color.RED}[!] Nguồn truyện không hợp lệ. Hãy chọn trong số: {supported_list}{Color.RESET}")
-
-        # --- Nhập Base URL (nếu chưa dùng config cũ) ---
-        user_base_url = input(
-            f"{Color.YELLOW}[?] Base URL "
-            f"{Color.DIM}(mặc định: {DEFAULT_BASE_URL}){Color.RESET}: "
-        ).strip()
-        if user_base_url:
-            base_url = user_base_url.rstrip("/")
-
-    # --- Chọn chế độ nhập truyện (nếu nguồn hỗ trợ tìm kiếm) ---
-    supports_search = source in ("69shuba",)
-    
-    if supports_search:
-        print(f"\n{Color.YELLOW}[?] Cách nhập thông tin truyện:{Color.RESET}")
-        print(f"    {Color.CYAN}1{Color.RESET} — Nhập ID truyện và ID chương bắt đầu thủ công")
-        print(f"    {Color.CYAN}2{Color.RESET} — Tìm kiếm truyện theo tên (khuyên dùng)")
-        
-        mode = input(f"{Color.YELLOW}[?] Chọn (1/2, mặc định: 2): {Color.RESET}").strip()
-        if mode == "1":
-            story_id, start_chapter_id = _input_ids_manual()
-        else:
-            story_id, start_chapter_id = _search_and_select(source, base_url)
+            url_mode = False
     else:
-        story_id, start_chapter_id = _input_ids_manual()
+        url_mode = False
+
+    # Nếu người dùng muốn cào bằng cách dán URL trực tiếp
+    if not config:
+        if not url_mode:
+            # Hỏi xem họ có muốn dán URL trực tiếp không
+            url_choice = input(
+                f"{Color.YELLOW}[?] Bạn có muốn dán trực tiếp URL chương truyện để cào luôn không? (y/N): {Color.RESET}"
+            ).strip().lower()
+            if url_choice in ("y", "yes"):
+                url_mode = True
+
+        if url_mode:
+            while True:
+                direct_url = input(
+                    f"{Color.YELLOW}[?] Nhập URL chương truyện cần cào: {Color.RESET}"
+                ).strip()
+                if not direct_url.startswith("http"):
+                    print(f"{Color.RED}[!] URL không hợp lệ. Phải bắt đầu bằng http:// hoặc https://{Color.RESET}")
+                    continue
+                break
+
+            # Tự động nhận diện nguồn dựa vào URL
+            if "metruyenchuvn.com" in direct_url:
+                source = "metruyenchuvn"
+                # Lấy base_url từ domain + tên truyện (ví dụ: https://metruyenchuvn.com/nguoi-tren-van-nguoi)
+                # URL: https://metruyenchuvn.com/nguoi-tren-van-nguoi/chuong-1-AoCo2t_YhnIh
+                # Cắt bớt phần chương ở cuối
+                match = re.match(r"(https?://[^/]+/[^/]+)/chuong-", direct_url)
+                if match:
+                    base_url = match.group(1)
+                else:
+                    # Fallback
+                    parts = direct_url.split("/")
+                    base_url = "/".join(parts[:4])
+            elif "69shuba" in direct_url or "69shu" in direct_url:
+                source = "69shuba"
+                # URL dạng: https://www.69shuba.com/txt/30756/30756382
+                parts = direct_url.split("/")
+                base_url = "/".join(parts[:5]) # https://www.69shuba.com/txt
+            else:
+                # Mặc định là metruyenchuvn nếu không rõ
+                source = "metruyenchuvn"
+                parts = direct_url.split("/")
+                base_url = "/".join(parts[:4])
+
+            story_id = direct_url  # Đưa URL này vào story_id để crawler_engine nhận diện làm điểm xuất phát
+            start_chapter_id = direct_url
+        else:
+            # --- Nhập Nguồn truyện (nếu chưa dùng config cũ) ---
+            supported_list = ", ".join(SOURCES.keys())
+            while True:
+                user_source = input(
+                    f"{Color.YELLOW}[?] Chọn nguồn truyện "
+                    f"{Color.DIM}(hỗ trợ: {supported_list}, mặc định: 69shuba){Color.RESET}: "
+                ).strip().lower()
+                if not user_source:
+                    source = "69shuba"
+                    break
+                if user_source in SOURCES:
+                    source = user_source
+                    break
+                print(f"{Color.RED}[!] Nguồn truyện không hợp lệ. Hãy chọn trong số: {supported_list}{Color.RESET}")
+
+            # --- Nhập Base URL (nếu chưa dùng config cũ) ---
+            user_base_url = input(
+                f"{Color.YELLOW}[?] Base URL "
+                f"{Color.DIM}(mặc định: {DEFAULT_BASE_URL}){Color.RESET}: "
+            ).strip()
+            if user_base_url:
+                base_url = user_base_url.rstrip("/")
+
+    # --- Chọn chế độ nhập truyện (nếu nguồn hỗ trợ tìm kiếm và không ở chế độ dán URL trực tiếp) ---
+    if not config and not url_mode:
+        supports_search = source in ("69shuba",)
+        
+        if supports_search:
+            print(f"\n{Color.YELLOW}[?] Cách nhập thông tin truyện:{Color.RESET}")
+            print(f"    {Color.CYAN}1{Color.RESET} — Nhập ID truyện và ID chương bắt đầu thủ công")
+            print(f"    {Color.CYAN}2{Color.RESET} — Tìm kiếm truyện theo tên (khuyên dùng)")
+            
+            mode = input(f"{Color.YELLOW}[?] Chọn (1/2, mặc định: 2): {Color.RESET}").strip()
+            if mode == "1":
+                story_id, start_chapter_id = _input_ids_manual()
+            else:
+                story_id, start_chapter_id = _search_and_select(source, base_url)
+        else:
+            story_id, start_chapter_id = _input_ids_manual()
 
     # --- Nhập số lượng chương ---
     while True:
@@ -129,16 +187,23 @@ def get_user_input() -> Tuple[str, int, int, int, str, str]:
         if user_output_dir:
             output_dir = user_output_dir
 
-    # --- Lưu config cho lần chạy sau ---
-    save_config(base_url, output_dir, source)
+    # --- Lưu config cho lần chạy sau (chỉ lưu nếu không phải chế độ dán URL tạm thời, hoặc lưu base_url hợp lệ) ---
+    if not isinstance(story_id, str) or not story_id.startswith("http"):
+        save_config(base_url, output_dir, source)
+    else:
+        # Đối với chế độ dán URL trực tiếp, vẫn lưu source và output_dir
+        save_config(base_url, output_dir, source)
 
     # --- Hiển thị tóm tắt ---
     print(f"\n{Color.CYAN}{'─' * 60}{Color.RESET}")
     print(f"{Color.BOLD}   📋  TÓM TẮT CẤU HÌNH:{Color.RESET}")
     print(f"   Nguồn truyện    : {Color.GREEN}{source}{Color.RESET}")
     print(f"   Base URL        : {Color.GREEN}{base_url}{Color.RESET}")
-    print(f"   ID Truyện       : {Color.GREEN}{story_id}{Color.RESET}")
-    print(f"   Chương bắt đầu  : {Color.GREEN}{start_chapter_id}{Color.RESET}")
+    if isinstance(story_id, str) and story_id.startswith("http"):
+        print(f"   URL bắt đầu cào : {Color.GREEN}{story_id}{Color.RESET}")
+    else:
+        print(f"   ID Truyện       : {Color.GREEN}{story_id}{Color.RESET}")
+        print(f"   Chương bắt đầu  : {Color.GREEN}{start_chapter_id}{Color.RESET}")
     print(f"   Số chương tải   : {Color.GREEN}{num_chapters}{Color.RESET}")
     print(f"   Thư mục lưu     : {Color.GREEN}{output_dir}{Color.RESET}")
     print(f"{Color.CYAN}{'─' * 60}{Color.RESET}\n")

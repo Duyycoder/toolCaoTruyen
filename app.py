@@ -519,11 +519,20 @@ async def websocket_crawl(websocket: WebSocket):
         
         # Trích xuất các thông số cấu hình
         base_url = config.get("base_url")
-        story_id = int(config.get("story_id"))
-        start_chapter_id = int(config.get("start_chapter_id"))
         num_chapters = int(config.get("num_chapters"))
         output_dir = config.get("output_dir")
         source = config.get("source")
+
+        # Hỗ trợ chế độ dán URL trực tiếp: nếu story_id là URL, giữ nguyên dạng string
+        raw_story_id = config.get("story_id", "")
+        raw_start_chapter_id = config.get("start_chapter_id", "")
+
+        if isinstance(raw_story_id, str) and raw_story_id.startswith("http"):
+            story_id = raw_story_id
+            start_chapter_id = raw_story_id
+        else:
+            story_id = int(raw_story_id)
+            start_chapter_id = int(raw_start_chapter_id)
 
         # Khởi tạo parser tương ứng
         parser = get_source(source, base_url)

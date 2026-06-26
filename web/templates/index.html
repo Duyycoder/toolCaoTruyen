@@ -463,6 +463,53 @@
             min-width: 2.2rem;
             text-align: right;
         }
+
+        /* --- CRAWL MODE TOGGLE --- */
+        .mode-toggle-group {
+            display: flex;
+            gap: 0;
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+        .mode-toggle-btn {
+            flex: 1;
+            padding: 0.55rem 0.75rem;
+            background: var(--bg-surface);
+            color: var(--text-secondary);
+            border: none;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            font-family: inherit;
+            transition: all var(--transition-fast);
+            text-align: center;
+        }
+        .mode-toggle-btn:not(:last-child) {
+            border-right: 1px solid var(--border-color);
+        }
+        .mode-toggle-btn:hover {
+            background: rgba(20, 184, 166, 0.08);
+        }
+        .mode-toggle-btn.active {
+            background: linear-gradient(135deg, rgba(20, 184, 166, 0.2), rgba(59, 130, 246, 0.15));
+            color: var(--color-accent);
+            font-weight: 600;
+            box-shadow: inset 0 -2px 0 var(--color-accent);
+        }
+        .url-detected-info {
+            margin-top: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            background: rgba(20, 184, 166, 0.08);
+            border: 1px solid rgba(20, 184, 166, 0.2);
+            border-radius: var(--radius-sm);
+            font-size: 0.78rem;
+            color: var(--color-accent);
+            display: none;
+        }
+        .url-detected-info span {
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -506,41 +553,64 @@
                 </select>
             </div>
 
-            <!-- Base URL -->
+            <!-- Chế độ nhập liệu -->
             <div class="form-group">
-                <label for="input-base-url">Base URL</label>
-                <input type="text" id="input-base-url" placeholder="https://www.69shuba.com/txt">
-            </div>
-
-            <!-- Tìm kiếm truyện (Mới) -->
-            <div class="form-group" id="search-section" style="border-top: 1px solid var(--border-color); padding-top: 1rem;">
-                <label for="input-search-keyword">Tìm kiếm truyện theo tên</label>
-                <div class="directory-flex">
-                    <input type="text" id="input-search-keyword" placeholder="Nhập tên truyện (tiếng Việt / Trung)...">
-                    <button type="button" class="btn btn-secondary" id="btn-search-book">🔍 Tìm kiếm</button>
-                </div>
-                <div id="search-results-list" style="display: none; flex-direction: column; gap: 0.5rem; max-height: 180px; overflow-y: auto; background-color: rgba(5, 7, 12, 0.5); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 0.5rem; margin-top: 0.5rem;">
-                    <!-- Danh sách truyện sẽ được load qua JS -->
+                <label>Chế độ nhập liệu</label>
+                <div class="mode-toggle-group">
+                    <button type="button" class="mode-toggle-btn active" id="btn-mode-search">🔍 Tìm kiếm / Nhập ID</button>
+                    <button type="button" class="mode-toggle-btn" id="btn-mode-url">🔗 Dán URL trực tiếp</button>
                 </div>
             </div>
 
-            <!-- Chọn chương từ mục lục (Mới) -->
-            <div class="form-group" id="catalog-section" style="display: none; border-top: 1px dashed var(--border-color); padding-top: 1rem;">
-                <label id="catalog-label">Mục lục chương (Nhấn để chọn chương bắt đầu)</label>
-                <div id="catalog-list" style="display: flex; flex-direction: column; gap: 0.25rem; max-height: 180px; overflow-y: auto; background-color: rgba(5, 7, 12, 0.5); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 0.5rem; font-family: monospace; font-size: 0.8rem;">
-                    <!-- Danh sách chương sẽ được load qua JS -->
+            <!-- ===== CHẾ ĐỘ DÁN URL TRỰC TIẾP ===== -->
+            <div id="url-mode-section" style="display: none;">
+                <div class="form-group" style="border-top: 1px solid var(--border-color); padding-top: 1rem;">
+                    <label for="input-direct-url">URL chương truyện cần cào</label>
+                    <input type="text" id="input-direct-url" placeholder="Dán URL chương truyện vào đây, ví dụ: https://metruyenchuvn.com/ten-truyen/chuong-1-...">
+                    <div class="url-detected-info" id="url-detected-info">
+                        <!-- Thông tin nguồn được tự nhận diện -->
+                    </div>
                 </div>
             </div>
 
-            <!-- ID Truyện & ID Chương bắt đầu -->
-            <div class="input-row">
+            <!-- ===== CHẾ ĐỘ TÌM KIẾM / NHẬP ID (mặc định) ===== -->
+            <div id="id-mode-section">
+                <!-- Base URL -->
                 <div class="form-group">
-                    <label for="input-story-id">ID Bộ Truyện</label>
-                    <input type="number" id="input-story-id" placeholder="Ví dụ: 90438">
+                    <label for="input-base-url">Base URL</label>
+                    <input type="text" id="input-base-url" placeholder="https://www.69shuba.com/txt">
                 </div>
-                <div class="form-group">
-                    <label for="input-start-chapter-id">ID Chương Bắt Đầu</label>
-                    <input type="number" id="input-start-chapter-id" placeholder="Ví dụ: 40755198">
+
+                <!-- Tìm kiếm truyện (Mới) -->
+                <div class="form-group" id="search-section" style="border-top: 1px solid var(--border-color); padding-top: 1rem;">
+                    <label for="input-search-keyword">Tìm kiếm truyện theo tên</label>
+                    <div class="directory-flex">
+                        <input type="text" id="input-search-keyword" placeholder="Nhập tên truyện (tiếng Việt / Trung)...">
+                        <button type="button" class="btn btn-secondary" id="btn-search-book">🔍 Tìm kiếm</button>
+                    </div>
+                    <div id="search-results-list" style="display: none; flex-direction: column; gap: 0.5rem; max-height: 180px; overflow-y: auto; background-color: rgba(5, 7, 12, 0.5); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 0.5rem; margin-top: 0.5rem;">
+                        <!-- Danh sách truyện sẽ được load qua JS -->
+                    </div>
+                </div>
+
+                <!-- Chọn chương từ mục lục (Mới) -->
+                <div class="form-group" id="catalog-section" style="display: none; border-top: 1px dashed var(--border-color); padding-top: 1rem;">
+                    <label id="catalog-label">Mục lục chương (Nhấn để chọn chương bắt đầu)</label>
+                    <div id="catalog-list" style="display: flex; flex-direction: column; gap: 0.25rem; max-height: 180px; overflow-y: auto; background-color: rgba(5, 7, 12, 0.5); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 0.5rem; font-family: monospace; font-size: 0.8rem;">
+                        <!-- Danh sách chương sẽ được load qua JS -->
+                    </div>
+                </div>
+
+                <!-- ID Truyện & ID Chương bắt đầu -->
+                <div class="input-row">
+                    <div class="form-group">
+                        <label for="input-story-id">ID Bộ Truyện</label>
+                        <input type="number" id="input-story-id" placeholder="Ví dụ: 90438">
+                    </div>
+                    <div class="form-group">
+                        <label for="input-start-chapter-id">ID Chương Bắt Đầu</label>
+                        <input type="number" id="input-start-chapter-id" placeholder="Ví dụ: 40755198">
+                    </div>
                 </div>
             </div>
 
@@ -808,6 +878,89 @@
         const catalogSection = document.getElementById("catalog-section");
         const catalogList = document.getElementById("catalog-list");
 
+        // --- URL MODE DOM ELEMENTS ---
+        const btnModeSearch = document.getElementById("btn-mode-search");
+        const btnModeUrl = document.getElementById("btn-mode-url");
+        const urlModeSection = document.getElementById("url-mode-section");
+        const idModeSection = document.getElementById("id-mode-section");
+        const inputDirectUrl = document.getElementById("input-direct-url");
+        const urlDetectedInfo = document.getElementById("url-detected-info");
+        let isUrlMode = false;
+
+        // --- URL MODE TOGGLE LOGIC ---
+        btnModeSearch.addEventListener("click", () => {
+            isUrlMode = false;
+            btnModeSearch.classList.add("active");
+            btnModeUrl.classList.remove("active");
+            idModeSection.style.display = "block";
+            urlModeSection.style.display = "none";
+        });
+
+        btnModeUrl.addEventListener("click", () => {
+            isUrlMode = true;
+            btnModeUrl.classList.add("active");
+            btnModeSearch.classList.remove("active");
+            urlModeSection.style.display = "block";
+            idModeSection.style.display = "none";
+        });
+
+        // --- URL AUTO-DETECT LOGIC ---
+        // Bảng ánh xạ domain → source name
+        const DOMAIN_SOURCE_MAP = {
+            "metruyenchuvn.com": "metruyenchuvn",
+            "69shuba.com": "69shuba",
+            "69shu.com": "69shuba",
+        };
+
+        function detectSourceFromUrl(url) {
+            try {
+                const hostname = new URL(url).hostname;
+                for (const [domain, source] of Object.entries(DOMAIN_SOURCE_MAP)) {
+                    if (hostname.includes(domain)) {
+                        return source;
+                    }
+                }
+            } catch (_) {}
+            return null;
+        }
+
+        function extractBaseUrlFromDirectUrl(url, source) {
+            if (source === "metruyenchuvn") {
+                // URL: https://metruyenchuvn.com/ten-truyen/chuong-X-hash
+                const match = url.match(/^(https?:\/\/[^\/]+\/[^\/]+)\/chuong-/);
+                if (match) return match[1];
+                const parts = url.split("/");
+                return parts.slice(0, 4).join("/");
+            } else if (source === "69shuba") {
+                // URL: https://www.69shuba.com/txt/XXXXX/YYYYYYY
+                const parts = url.split("/");
+                return parts.slice(0, 5).join("/");
+            }
+            // Fallback
+            const parts = url.split("/");
+            return parts.slice(0, 4).join("/");
+        }
+
+        inputDirectUrl.addEventListener("input", () => {
+            const url = inputDirectUrl.value.trim();
+            if (!url.startsWith("http")) {
+                urlDetectedInfo.style.display = "none";
+                return;
+            }
+            const detectedSource = detectSourceFromUrl(url);
+            if (detectedSource) {
+                urlDetectedInfo.style.display = "block";
+                urlDetectedInfo.innerHTML = `✅ Đã nhận diện nguồn: <span>${detectedSource}</span>`;
+                // Tự động cập nhật source selector
+                selectSource.value = detectedSource;
+            } else {
+                urlDetectedInfo.style.display = "block";
+                urlDetectedInfo.innerHTML = `⚠️ Không nhận diện được nguồn từ URL. Sẽ thử cào tự động.`;
+                urlDetectedInfo.style.borderColor = "rgba(251, 191, 36, 0.3)";
+                urlDetectedInfo.style.color = "var(--color-warning, #fbbf24)";
+            }
+        });
+
         function logToConsole(message, type = "info", bold = false) {
             const div = document.createElement("div");
             div.className = `log-${type} ${bold ? 'log-bold' : ''}`;
@@ -1008,6 +1161,9 @@
                 inputNumChapters.disabled = true;
                 selectSource.disabled = true;
                 btnBrowseDir.disabled = true;
+                inputDirectUrl.disabled = true;
+                btnModeSearch.disabled = true;
+                btnModeUrl.disabled = true;
             } else {
                 btnStartCrawl.innerHTML = "<span>▶</span> Bắt Đầu Tải Truyện";
                 btnStartCrawl.style.backgroundColor = "var(--color-primary)";
@@ -1017,6 +1173,9 @@
                 inputNumChapters.disabled = false;
                 selectSource.disabled = false;
                 btnBrowseDir.disabled = false;
+                inputDirectUrl.disabled = false;
+                btnModeSearch.disabled = false;
+                btnModeUrl.disabled = false;
             }
         }
 
@@ -1029,13 +1188,32 @@
                 return;
             }
 
-            const storyId = inputStoryId.value.trim();
-            const startId = inputStartChapterId.value.trim();
             const count = parseInt(inputNumChapters.value) || 50;
+            let storyId, startId, baseUrlForPayload, sourceForPayload;
 
-            if (!storyId || !startId) {
-                alert("Vui lòng nhập ID Bộ Truyện và ID Chương Bắt Đầu!");
-                return;
+            if (isUrlMode) {
+                // === CHẾ ĐỘ DÁN URL ===
+                const directUrl = inputDirectUrl.value.trim();
+                if (!directUrl || !directUrl.startsWith("http")) {
+                    alert("Vui lòng dán URL chương truyện hợp lệ (bắt đầu bằng http:// hoặc https://)!");
+                    return;
+                }
+                const detectedSource = detectSourceFromUrl(directUrl);
+                sourceForPayload = detectedSource || selectSource.value || "metruyenchuvn";
+                baseUrlForPayload = extractBaseUrlFromDirectUrl(directUrl, sourceForPayload);
+                storyId = directUrl;
+                startId = directUrl;
+                logToConsole(`[i] Chế độ dán URL: Nguồn=${sourceForPayload}, URL=${directUrl}`, "info");
+            } else {
+                // === CHẾ ĐỘ NHẬP ID ===
+                storyId = inputStoryId.value.trim();
+                startId = inputStartChapterId.value.trim();
+                if (!storyId || !startId) {
+                    alert("Vui lòng nhập ID Bộ Truyện và ID Chương Bắt Đầu!");
+                    return;
+                }
+                baseUrlForPayload = inputBaseUrl.value.trim();
+                sourceForPayload = selectSource.value;
             }
 
             try {
@@ -1043,9 +1221,9 @@
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                        base_url: inputBaseUrl.value.trim(),
+                        base_url: baseUrlForPayload,
                         output_dir: inputOutputDir.value.trim(),
-                        source: selectSource.value
+                        source: sourceForPayload
                     })
                 });
             } catch (err) {
@@ -1063,12 +1241,12 @@
                 setCrawlRunningState(true);
 
                 const payload = {
-                    base_url: inputBaseUrl.value.trim(),
+                    base_url: baseUrlForPayload,
                     story_id: storyId,
                     start_chapter_id: startId,
                     num_chapters: count,
                     output_dir: inputOutputDir.value.trim(),
-                    source: selectSource.value
+                    source: sourceForPayload
                 };
                 wsCrawl.send(JSON.stringify(payload));
             };

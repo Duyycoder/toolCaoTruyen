@@ -1,10 +1,12 @@
 from typing import Dict, Type
 from sources.base import BaseSourceParser
 from sources.shuba69 import Shuba69Parser
+from sources.metruyenchuvn import MetruyenchuvnParser
 
 # Đăng ký các Strategy Parser
 SOURCES: Dict[str, Type[BaseSourceParser]] = {
-    "69shuba": Shuba69Parser
+    "69shuba": Shuba69Parser,
+    "metruyenchuvn": MetruyenchuvnParser
 }
 
 def get_source(name: str, base_url: str) -> BaseSourceParser:

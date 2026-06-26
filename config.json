@@ -1,10 +1,10 @@
 {
-  "base_url": "https://www.69shuba.com/txt",
-  "output_dir": "C:\\Users\\ASUS\\Downloads",
-  "source": "69shuba",
+  "base_url": "https://metruyenchuvn.com/nguoi-tren-van-nguoi",
+  "output_dir": "F:\\Du_An_Truyen_Chu\\Nguoi_Tren_Van_Nguoi\\Raw",
+  "source": "metruyenchuvn",
   "translator": {
     "engine": "gemini_api",
-    "ollama_model": "erax-translator:latest",
+    "ollama_model": "qwen2.5:7b-instruct",
     "leak_threshold_percent": 10,
     "gemini_api_key": "",
     "gemini_model": "gemini-flash-latest",
