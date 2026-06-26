@@ -3,12 +3,26 @@ from typing import Callable, Optional
 class TranslatorEngine:
     def __init__(self):
         self.glossary = {}
+        self.common_idioms = {}
+        self.genre = "tien_hiep"
 
     def set_glossary(self, glossary: dict):
         """
         Nạp từ điển (Global + Per-story) vào engine để ép model sử dụng.
         """
         self.glossary = glossary
+
+    def set_common_idioms(self, common_idioms: dict):
+        """
+        Nạp từ điển thành ngữ hệ thống vào engine.
+        """
+        self.common_idioms = common_idioms
+
+    def set_genre(self, genre: str):
+        """
+        Thiết lập thể loại bối cảnh truyện để định hướng prompt.
+        """
+        self.genre = genre
 
     def translate(self, text: str, progress_callback: Optional[Callable[[str], None]] = None) -> str:
         """

@@ -576,6 +576,17 @@
                 </select>
             </div>
 
+            <!-- Thể loại truyện -->
+            <div class="form-group">
+                <label for="select-story-genre">Thể loại truyện (Prompt tối ưu hóa)</label>
+                <select id="select-story-genre">
+                    <option value="tien_hiep" selected>Tiên Hiệp / Huyền Huyễn / Võ Hiệp</option>
+                    <option value="do_thi">Đô Thị / Hiện Đại / Võng Du</option>
+                    <option value="khoa_huyen">Khoa Huyễn / Mạt Thế / Vô Hạn Lưu</option>
+                    <option value="generic">Dịch tiểu thuyết chung (Không áp dụng bối cảnh)</option>
+                </select>
+            </div>
+
             <!-- Cấu hình Ollama Model -->
             <div id="block-ollama-config" style="display: flex; flex-direction: column; gap: 1rem;">
                 <div class="form-group">
@@ -730,6 +741,7 @@
                     inputGeminiModel.value = config.translator.gemini_model || "gemini-2.5-flash";
                     inputLeakThreshold.value = config.translator.leak_threshold_percent || 10;
                     checkAutoExtractGlossary.checked = config.translator.auto_extract_glossary !== false;
+                    selectStoryGenre.value = config.translator.genre || "tien_hiep";
                     
                     toggleEngineConfigBlocks(config.translator.engine);
                     await loadOllamaModelsRegistry(config.translator.ollama_model);
@@ -925,6 +937,7 @@
         
         const selectSourceLang = document.getElementById("select-source-lang");
         const selectTransEngine = document.getElementById("select-trans-engine");
+        const selectStoryGenre = document.getElementById("select-story-genre");
         
         const blockOllamaConfig = document.getElementById("block-ollama-config");
         const selectOllamaModel = document.getElementById("select-ollama-model");
@@ -1208,7 +1221,8 @@
                         leak_threshold_percent: leakThreshold,
                         gemini_api_key: geminiKey,
                         gemini_model: geminiModel,
-                        auto_extract_glossary: checkAutoExtractGlossary.checked
+                        auto_extract_glossary: checkAutoExtractGlossary.checked,
+                        genre: selectStoryGenre.value
                     })
                 });
             } catch (err) {
@@ -1236,7 +1250,8 @@
                     gemini_model: geminiModel,
                     leak_threshold_percent: leakThreshold,
                     auto_extract_glossary: checkAutoExtractGlossary.checked,
-                    source_lang: selectSourceLang.value
+                    source_lang: selectSourceLang.value,
+                    genre: selectStoryGenre.value
                 };
                 wsTranslate.send(JSON.stringify(payload));
             };

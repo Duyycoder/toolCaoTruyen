@@ -82,6 +82,7 @@ class TranslatorConfigModel(BaseModel):
     gemini_api_key: str
     gemini_model: str
     auto_extract_glossary: Optional[bool] = True
+    genre: Optional[str] = "tien_hiep"
 
 # Endpoint trả về trang HTML chính
 @app.get("/", response_class=HTMLResponse)
@@ -136,7 +137,39 @@ async def get_languages():
 # API 3d: Lấy danh sách model Ollama được định nghĩa
 @app.get("/api/ollama/models")
 async def get_ollama_models_registry():
-    from translator import OLLAMA_MODELS
+    from translator.registry import OLLAMA_MODELS
+    import urllib.request
+    import json
+    
+    # Truy vấn Ollama để tự động nạp các model local đã cài đặt
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            local_models = data.get("models", [])
+            for m in local_models:
+                name = m.get("name")
+                if name:
+                    # Đăng ký model nếu chưa tồn tại vào registry toàn cục
+                    if name not in OLLAMA_MODELS:
+                        OLLAMA_MODELS[name] = {
+                            "chunk_size_chars": 400,
+                            "temperature": 0.05,
+                            "few_shot": True,
+                            "label": f"Local Model: {name}"
+                        }
+                    # Đăng ký cả phiên bản ngắn của tên model (không có :latest)
+                    short_name = name.split(":")[0] if ":" in name else name
+                    if short_name and short_name not in OLLAMA_MODELS:
+                        OLLAMA_MODELS[short_name] = {
+                            "chunk_size_chars": 400,
+                            "temperature": 0.05,
+                            "few_shot": True,
+                            "label": f"Local Model: {short_name}"
+                        }
+    except Exception as e:
+        print(f"[Warning] Không thể quét models từ Ollama local: {e}")
+        
     return {"models": OLLAMA_MODELS}
 
 # API 3e: Kiểm tra xem một model Ollama đã được tải chưa
@@ -349,6 +382,7 @@ async def websocket_translate(websocket: WebSocket):
         leak_threshold = int(config.get("leak_threshold_percent", 10))
         output_dir_custom = config.get("output_dir", "").strip()
         auto_extract_glossary = config.get("auto_extract_glossary", True)
+        genre = config.get("genre", "tien_hiep")
         
         # Thu nhập danh sách file dịch và xác định thư mục truyện
         files_to_translate = []
@@ -434,6 +468,26 @@ async def websocket_translate(websocket: WebSocket):
                 "message": f"[✗] Nguồn dịch '{engine_type}' không hợp lệ."
             })
             return
+
+        # Cấu hình Genre cho các translator
+        translator.set_genre(genre)
+        if gemini_extractor:
+            gemini_extractor.set_genre(genre)
+            
+        # Nạp từ điển thành ngữ dùng chung (common_idioms.json)
+        common_idioms_path = os.path.join(".", "common_idioms.json")
+        if os.path.exists(common_idioms_path):
+            try:
+                with open(common_idioms_path, 'r', encoding='utf-8') as f:
+                    common_idioms = json.load(f)
+                    translator.set_common_idioms(common_idioms)
+                    if gemini_extractor:
+                        gemini_extractor.set_common_idioms(common_idioms)
+            except Exception as e:
+                await websocket.send_json({
+                    "event": "log",
+                    "message": f"[WARN] Không thể nạp từ điển thành ngữ chung: {e}"
+                })
 
         # Nạp từ điển vào translator
         translator.set_glossary(combined_glossary)

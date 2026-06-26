@@ -111,26 +111,84 @@ class GeminiTranslator(TranslatorEngine):
         }
         lang_name = lang_map.get(source_lang, "Chinese")
         
+        genre_instructions = {
+            "tien_hiep": (
+                "You are translating a Wuxia/Cultivation (Tiên Hiệp/Huyền Huyễn) novel. "
+                "Use appropriate historical/ancient Vietnamese wuxia pronouns (such as 'ta' and 'ngươi' for dialogues, "
+                "'hắn', 'nàng' for pronouns, and respect honorifics like 'sư phụ', 'sư huynh'). "
+                "However, adapt pronouns flexibly depending on character age, era, and status differences (e.g. modern transmigrators might use tôi/cậu, while ancient ancestors use ta/ngươi/bản tọa). "
+                "Translate cultivation stages, locations, and magical items using standard Sino-Vietnamese (Hán Việt) naming style."
+            ),
+            "do_thi": (
+                "You are translating a Modern/Urban (Đô Thị/Hiện Đại) novel. "
+                "Use modern Vietnamese pronouns (such as 'tôi', 'cậu', 'anh', 'em', 'hắn') suitable for contemporary dialogue. "
+                "Translate internet slang and modern jargon naturally into smooth Vietnamese."
+            ),
+            "khoa_huyen": (
+                "You are translating a Sci-Fi/Apocalyptic/Game (Khoa Huyễn/Mạt Thế/Vô Hạn Lưu) novel. "
+                "Translate game system messages, stats, attributes, and sci-fi terms accurately and consistently. "
+                "Use natural, engaging Vietnamese appropriate for action and survival stories."
+            ),
+            "generic": (
+                "Translate the text into natural, smooth, and high-quality Vietnamese suitable for a web novel."
+            )
+        }
+        genre_text = genre_instructions.get(getattr(self, "genre", "tien_hiep"), genre_instructions["tien_hiep"])
+
         system_instruction = (
             f"You are an expert translator specializing in translating {lang_name} web novels to Vietnamese.\n"
             f"Translate the user's {lang_name} text to Vietnamese.\n"
+            f"Context: {genre_text}\n\n"
             "Requirements:\n"
-            "1. Translate into natural, smooth, and high-quality Vietnamese (novel style).\n"
+            "1. Translate into natural, smooth, and high-quality Vietnamese.\n"
             "2. Keep the original Markdown formatting (headings, blank lines) exactly as-is.\n"
-            f"3. Translate names consistently (e.g. for Chinese names like 江思 to Giang Tư, 冰糖 to Băng Đường).\n"
-            f"4. DO NOT leak or write any original non-Vietnamese characters in your output. Every sentence must be translated into Vietnamese.\n"
+            "3. Translate names consistently and accurately according to standard Sino-Vietnamese (Hán Việt) transliteration or the provided Glossary.\n"
+            "4. DO NOT leak or write any original non-Vietnamese characters in your output. Every sentence must be translated into Vietnamese.\n"
             "5. Output ONLY the translated Vietnamese text. Do not add comments, notes, or explanations.\n"
-            f"6. If the input contains short questions, dialogues, or specific terms (e.g. '“对抗？”'), translate them fully into Vietnamese (e.g. '“Đối kháng?”') and do not write or copy any original {lang_name} characters in your output."
+            "6. If the input contains short questions, dialogues, or specific terms, translate them fully into Vietnamese and do not write or copy any original characters in your output.\n"
+            "7. Translate Pinyin or untranslated Chinese terms into their Sino-Vietnamese (Hán Việt) equivalent or clear Vietnamese meaning (do not output raw Pinyin like 'Hu Ling Zhi').\n"
+            "8. Translate common idioms and metaphors into their natural Vietnamese equivalent (e.g. translate '扮猪吃老虎' to 'giả heo ăn hổ', '名义上的' to 'trên danh nghĩa', and '钉子户' to 'kẻ bám trụ lì lợm').\n"
+            "9. Avoid modern/slang terms in historical settings, and avoid overly ancient terms in modern settings."
         )
 
         active_glossary = {}
-        if self.glossary:
-            if chunk_text:
+        if chunk_text:
+            # 1. Tìm các từ trong common_idioms trước (độ ưu tiên thấp)
+            matching_idioms = {}
+            if hasattr(self, "common_idioms") and self.common_idioms:
+                for k, v in self.common_idioms.items():
+                    if k in chunk_text:
+                        matching_idioms[k] = v
+                        
+            # 2. Tìm các từ trong glossary (độ ưu tiên cao, đè lên idioms nếu trùng key)
+            matching_glossary = {}
+            if self.glossary:
                 for k, v in self.glossary.items():
                     if k in chunk_text:
-                        active_glossary[k] = v
-            else:
-                active_glossary = self.glossary
+                        matching_glossary[k] = v
+            
+            # Gộp lại: glossary đè lên idioms
+            merged_candidates = matching_idioms.copy()
+            merged_candidates.update(matching_glossary)
+            
+            # Capping: giới hạn tối đa 20 từ khóa
+            # Ưu tiên đưa các từ thuộc matching_glossary vào trước, sau đó mới điền thêm bằng matching_idioms
+            selected_keys = list(matching_glossary.keys())[:20]
+            if len(selected_keys) < 20:
+                remaining_space = 20 - len(selected_keys)
+                for k in matching_idioms.keys():
+                    if k not in selected_keys:
+                        selected_keys.append(k)
+                        if len(selected_keys) >= 20:
+                            break
+                            
+            for k in selected_keys:
+                active_glossary[k] = merged_candidates[k]
+        else:
+            # Nếu không có chunk_text, lấy tối đa 20 từ từ glossary
+            if self.glossary:
+                for k, v in list(self.glossary.items())[:20]:
+                    active_glossary[k] = v
 
         if active_glossary:
             glossary_text = "\n".join([f"- {k} -> {v}" for k, v in active_glossary.items()])

@@ -4,10 +4,11 @@
   "source": "69shuba",
   "translator": {
     "engine": "ollama",
-    "ollama_model": "qwen2.5:7b-instruct",
+    "ollama_model": "erax-translator:latest",
     "leak_threshold_percent": 10,
     "gemini_api_key": "",
     "gemini_model": "gemini-flash-latest",
-    "auto_extract_glossary": true
+    "auto_extract_glossary": true,
+    "genre": "tien_hiep"
   }
 }

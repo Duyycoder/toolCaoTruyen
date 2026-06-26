@@ -19,7 +19,8 @@ def get_default_config() -> Dict[str, any]:
             "leak_threshold_percent": 10,
             "gemini_api_key": "",
             "gemini_model": "gemini-flash-latest",
-            "auto_extract_glossary": True
+            "auto_extract_glossary": True,
+            "genre": "tien_hiep"
         }
     }
 
