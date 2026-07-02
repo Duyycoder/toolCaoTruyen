@@ -182,3 +182,63 @@ def generate_alternative_chinese_names(query: str, failed_attempts: list[str]) -
     except Exception as e:
         print(f"{Color.YELLOW}[WARN] Lỗi sinh tên truyện thay thế: {e}{Color.RESET}")
         return []
+
+def translate_search_results(results: list) -> list:
+    """Dịch tiêu đề và tác giả của danh sách kết quả tìm kiếm sang tiếng Việt trong một lượt gọi LLM."""
+    if not results:
+        return results
+        
+    items_to_translate = []
+    for r in results:
+        items_to_translate.append({
+            "id": r.book_id,
+            "title": r.title,
+            "author": r.author
+        })
+        
+    system_prompt = (
+        "You are an expert translation assistant specializing in Chinese-to-Vietnamese novel title and author translations. "
+        "Translate the Chinese novel titles and authors to standard Sino-Vietnamese (Hán Việt) or natural Vietnamese name translations. "
+        "Respond ONLY with a JSON object containing a key 'translations' which points to an array of translated objects in the same order."
+    )
+    
+    prompt = (
+        "Translate the following novel titles and author names from Chinese to Vietnamese (using proper Hán Việt transliteration). "
+        "Return a JSON object matching this structure:\n"
+        "{\n"
+        "  \"translations\": [\n"
+        "    {\"id\": \"12345\", \"title\": \"Đường Chuyên\", \"author\": \"Kiết Dữ 2\"}\n"
+        "  ]\n"
+        "}\n\n"
+        f"Data to translate: {json.dumps(items_to_translate, ensure_ascii=False)}"
+    )
+    
+    try:
+        response_text = call_llm_raw(prompt, system_prompt=system_prompt, response_json=True)
+        # Clean up markdown block if returned
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        elif response_text.startswith("```"):
+            response_text = response_text[3:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+        response_text = response_text.strip()
+        
+        data = json.loads(response_text)
+        translations = {item["id"]: item for item in data.get("translations", [])}
+        
+        for r in results:
+            trans = translations.get(r.book_id)
+            if trans:
+                r.translated_title = trans.get("title", r.title)
+                r.translated_author = trans.get("author", r.author)
+            else:
+                r.translated_title = r.title
+                r.translated_author = r.author
+    except Exception as e:
+        print(f"{Color.YELLOW}[WARN] Lỗi dịch kết quả tìm kiếm: {e}{Color.RESET}")
+        for r in results:
+            r.translated_title = r.title
+            r.translated_author = r.author
+            
+    return results

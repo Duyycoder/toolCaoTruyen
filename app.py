@@ -359,34 +359,49 @@ async def check_ollama_model(model: str):
 
 # API 3f: Tìm kiếm truyện theo tên
 @app.get("/api/search")
-async def search_book_api(keyword: str, source: str = "69shuba"):
+async def search_book_api(keyword: str, source: str = "69shuba", base_url: Optional[str] = None):
     """Tìm kiếm truyện theo tên qua API, hỗ trợ dịch tự động."""
     from sources.book_search import BookSearcher
-    from core.intelligent_search import translate_query_to_chinese
+    from core.intelligent_search import translate_query_to_chinese, translate_search_results
     
     def _do_search():
-        base_url = "https://www.69shuba.com/txt"  # default
-        # Lấy base_url từ config hiện tại nếu có
-        from core.config_manager import load_config
-        config = load_config()
-        if config:
-            base_url = config.get("base_url", base_url)
+        nonlocal base_url
+        if not base_url or not base_url.strip():
+            base_url = None
+            from core.config_manager import load_config
+            config = load_config()
+            if config and config.get("source") == source:
+                base_url = config.get("base_url")
             
+            if not base_url:
+                base_url = "https://www.69shuba.com/txt" if source == "69shuba" else "https://metruyenchuvn.com"
+                
         parser = get_source(source, base_url)
         
-        # Tự động dịch sang tiếng Trung nếu là tiếng Việt
-        translated_keyword = translate_query_to_chinese(keyword)
-        
+        # Tự động dịch sang tiếng Trung nếu là tiếng Việt và nguồn là 69shuba
+        if source == "69shuba":
+            translated_keyword = translate_query_to_chinese(keyword)
+        else:
+            translated_keyword = keyword
+            
         with BookSearcher(parser) as searcher:
             results = searcher.search(translated_keyword)
-            # Thử lại bằng tên thay thế nếu rỗng (1 lần thử để tối ưu thời gian phản hồi API)
-            if not results:
+            # Thử lại bằng tên thay thế nếu rỗng (chỉ với 69shuba)
+            if not results and source == "69shuba":
                 from core.intelligent_search import generate_alternative_chinese_names
                 alternatives = generate_alternative_chinese_names(keyword, [keyword, translated_keyword])
                 for alt in alternatives:
                     results = searcher.search(alt)
                     if results:
                         break
+            
+            # Tự động dịch tiêu đề và tác giả từ tiếng Trung sang tiếng Việt (nếu nguồn là 69shuba)
+            if results and source == "69shuba":
+                try:
+                    results = translate_search_results(results)
+                except Exception as ex:
+                    print(f"[WARN] Lỗi dịch kết quả tìm kiếm: {ex}")
+                    
             return results, translated_keyword
             
     try:
@@ -398,29 +413,38 @@ async def search_book_api(keyword: str, source: str = "69shuba"):
                 {
                     "book_id": r.book_id,
                     "title": r.title,
+                    "translated_title": getattr(r, "translated_title", r.title),
                     "author": r.author,
+                    "translated_author": getattr(r, "translated_author", r.author),
                     "book_url": r.book_url,
                     "status": r.status,
                     "latest_chapter": r.latest_chapter,
                 } for r in results
             ]
         }
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi tìm kiếm: {str(e)}")
 
 
 # API 3g: Lấy mục lục chương
 @app.get("/api/catalog")
-async def get_catalog_api(book_url: str, source: str = "69shuba"):
+async def get_catalog_api(book_url: str, source: str = "69shuba", base_url: Optional[str] = None):
     """Lấy mục lục chương qua API."""
     from sources.book_search import BookSearcher
     
     def _do_catalog():
-        base_url = "https://www.69shuba.com/txt"
-        from core.config_manager import load_config
-        config = load_config()
-        if config:
-            base_url = config.get("base_url", base_url)
+        nonlocal base_url
+        if not base_url or not base_url.strip():
+            base_url = None
+            from core.config_manager import load_config
+            config = load_config()
+            if config and config.get("source") == source:
+                base_url = config.get("base_url")
+            
+            if not base_url:
+                base_url = "https://www.69shuba.com/txt" if source == "69shuba" else "https://metruyenchuvn.com"
             
         parser = get_source(source, base_url)
         with BookSearcher(parser) as searcher:
@@ -440,6 +464,8 @@ async def get_catalog_api(book_url: str, source: str = "69shuba"):
                 } for ch in chapters
             ]
         }
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi lấy mục lục: {str(e)}")
 

@@ -359,11 +359,10 @@ class Shuba69Parser(BaseSourceParser):
             time.sleep(0.5)
         return "Just a moment" not in (driver.title or "")
 
-    def _search_via_ddg(self, keyword: str) -> list[BookSearchResult]:
-        """Tìm kiếm truyện qua DuckDuckGo HTML search (nhanh, không dính Cloudflare)."""
-        import urllib.request
-        import urllib.parse
+    def _search_via_ddg(self, driver: Any, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện qua DuckDuckGo HTML search (dùng Selenium tránh bot detection)."""
         from bs4 import BeautifulSoup
+        import urllib.parse
         
         try:
             from urllib.parse import urlparse
@@ -376,30 +375,22 @@ class Shuba69Parser(BaseSourceParser):
             query = f"site:{domain} {keyword}"
             url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
             
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-                }
-            )
+            driver.get(url)
+            time.sleep(1.5)
             
-            with urllib.request.urlopen(req, timeout=10) as response:
-                html = response.read().decode("utf-8")
-                
+            html = driver.page_source
             soup = BeautifulSoup(html, "html.parser")
             results = []
             seen_ids = set()
             
             for a in soup.find_all("a", class_="result__url"):
                 href = a.get("href", "").strip()
-                # Giải mã URL redirect từ DuckDuckGo
                 match = re.search(r'uddg=([^&]+)', href)
                 if match:
                     actual_url = urllib.parse.unquote(match.group(1))
                 else:
                     actual_url = a.get_text(strip=True)
                     
-                # Chỉ lấy các link chính của truyện trên 69shuba
                 if "69shuba" not in actual_url or "/txt/" in actual_url:
                     continue
                     
@@ -435,11 +426,10 @@ class Shuba69Parser(BaseSourceParser):
             print(f"{Color.YELLOW}[WARN] Lỗi tìm kiếm qua DuckDuckGo: {e}. Đang thử công cụ khác...{Color.RESET}")
             return []
 
-    def _search_via_yahoo(self, keyword: str) -> list[BookSearchResult]:
-        """Tìm kiếm truyện qua Yahoo Search (không lo CAPTCHA)."""
-        import urllib.request
-        import urllib.parse
+    def _search_via_yahoo(self, driver: Any, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện qua Yahoo Search (dùng Selenium tránh bot detection)."""
         from bs4 import BeautifulSoup
+        import urllib.parse
         
         try:
             from urllib.parse import urlparse, unquote
@@ -452,16 +442,10 @@ class Shuba69Parser(BaseSourceParser):
             query = f"site:{domain} {keyword}"
             url = "https://search.yahoo.com/search?p=" + urllib.parse.quote(query)
             
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-                }
-            )
+            driver.get(url)
+            time.sleep(1.5)
             
-            with urllib.request.urlopen(req, timeout=10) as response:
-                html = response.read().decode("utf-8")
-                
+            html = driver.page_source
             soup = BeautifulSoup(html, "html.parser")
             results = []
             seen_ids = set()
@@ -479,10 +463,10 @@ class Shuba69Parser(BaseSourceParser):
                 else:
                     actual_url = href
                     
-                if "69shuba" not in actual_url or "/txt/" in actual_url:
+                if "69shu" not in actual_url or "/txt/" in actual_url:
                     continue
                     
-                book_id_match = re.search(r'/book/(\d+)', actual_url) or re.search(r'69shuba\.com/(\d+)/?$', actual_url)
+                book_id_match = re.search(r'/book/(\d+)', actual_url) or re.search(r'69shuba\.com/(\d+)/?$', actual_url) or re.search(r'69shu\.com/(\d+)/?$', actual_url)
                 if not book_id_match:
                     continue
                     
@@ -491,9 +475,15 @@ class Shuba69Parser(BaseSourceParser):
                     continue
                 seen_ids.add(book_id)
                 
-                title = a.get_text(strip=True)
-                title = re.sub(r'^.*?[›»]\s*(?:book\s*[›»]\s*)?\d*', '', title)
+                h3_el = a.find("h3")
+                if h3_el:
+                    title = h3_el.get_text(strip=True)
+                else:
+                    title = a.get_text(strip=True)
+                    title = re.sub(r'^.*?[›»]\s*(?:book\s*[›»]\s*)?\d*', '', title)
+                    
                 title = re.sub(r'^69shuba\.com', '', title)
+                title = re.sub(r'^69shu\.com', '', title)
                 title = re.sub(r'^https?://\S+', '', title)
                 title = re.sub(r'最新章节.*$', '', title)
                 title = re.sub(r'无弹窗.*$', '', title)
@@ -517,12 +507,12 @@ class Shuba69Parser(BaseSourceParser):
     def search_book(self, driver: Any, keyword: str) -> list[BookSearchResult]:
         """Tìm kiếm truyện theo từ khóa, ưu tiên DuckDuckGo -> Yahoo, fallback sang Selenium POST form."""
         # 1. Thử tìm nhanh qua DuckDuckGo để tránh Cloudflare Turnstile
-        ddg_results = self._search_via_ddg(keyword)
+        ddg_results = self._search_via_ddg(driver, keyword)
         if ddg_results:
             return ddg_results
             
         # 2. Thử tìm qua Yahoo Search
-        yahoo_results = self._search_via_yahoo(keyword)
+        yahoo_results = self._search_via_yahoo(driver, keyword)
         if yahoo_results:
             return yahoo_results
             

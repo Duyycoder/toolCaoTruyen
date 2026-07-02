@@ -12,6 +12,8 @@ class BookSearchResult:
     status: str = ""      # Trạng thái: "连载中" / "已完结"
     latest_chapter: str = ""  # Tên chương mới nhất (nếu có)
     cover_url: str = ""   # URL ảnh bìa (nếu có)
+    translated_title: str = ""  # Tên truyện đã dịch sang tiếng Việt (nếu có)
+    translated_author: str = "" # Tên tác giả đã dịch sang tiếng Việt (nếu có)
 
 @dataclass
 class ChapterInfo:

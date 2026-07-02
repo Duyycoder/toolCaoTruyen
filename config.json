@@ -1,7 +1,7 @@
 {
-  "base_url": "https://metruyenchuvn.com/nguoi-tren-van-nguoi",
-  "output_dir": "F:\\Du_An_Truyen_Chu\\Nguoi_Tren_Van_Nguoi\\Raw",
-  "source": "metruyenchuvn",
+  "base_url": "https://www.69shuba.com/txt",
+  "output_dir": "C:\\Users\\ASUS\\Downloads\\direct_text",
+  "source": "69shuba",
   "translator": {
     "engine": "gemini_api",
     "ollama_model": "qwen2.5:7b-instruct",

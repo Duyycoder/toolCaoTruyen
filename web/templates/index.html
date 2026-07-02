@@ -859,6 +859,20 @@
         // ==========================================
         const selectSource = document.getElementById("select-source");
         const inputBaseUrl = document.getElementById("input-base-url");
+        
+        const DEFAULT_SOURCE_URLS = {
+            "69shuba": "https://www.69shuba.com/txt",
+            "metruyenchuvn": "https://metruyenchuvn.com"
+        };
+        
+        selectSource.addEventListener("change", () => {
+            const val = selectSource.value;
+            if (DEFAULT_SOURCE_URLS[val]) {
+                inputBaseUrl.value = DEFAULT_SOURCE_URLS[val];
+                inputBaseUrl.placeholder = DEFAULT_SOURCE_URLS[val];
+            }
+        });
+
         const inputStoryId = document.getElementById("input-story-id");
         const inputStartChapterId = document.getElementById("input-start-chapter-id");
         const inputNumChapters = document.getElementById("input-num-chapters");
@@ -1059,20 +1073,37 @@
 
             try {
                 const source = selectSource.value;
-                const response = await fetch(`/api/search?keyword=${encodeURIComponent(keyword)}&source=${source}`);
+                const baseUrl = inputBaseUrl.value.trim();
+                const response = await fetch(`/api/search?keyword=${encodeURIComponent(keyword)}&source=${source}&base_url=${encodeURIComponent(baseUrl)}`);
                 const data = await response.json();
+
+                if (!response.ok) {
+                    const errMsg = data.detail || "Lỗi tìm kiếm!";
+                    searchResultsList.innerHTML = `<div style="text-align: center; color: var(--color-warning); padding: 0.5rem; font-size: 0.85rem; line-height: 1.4;">${errMsg}</div>`;
+                    logToConsole(`[-] Lỗi từ máy chủ: ${errMsg}`, "warning");
+                    return;
+                }
 
                 if (data.status === "success" && data.results.length > 0) {
                     searchResultsList.innerHTML = "";
                     data.results.forEach(book => {
                         const item = document.createElement("div");
                         item.className = "search-item";
+                        
+                        const displayTitle = book.translated_title && book.translated_title !== book.title
+                            ? `${book.translated_title} <span style="font-size: 0.8em; color: var(--text-muted); font-weight: normal; margin-left: 4px;">(${book.title})</span>`
+                            : book.title;
+                            
+                        const displayAuthor = book.translated_author && book.translated_author !== book.author
+                            ? `${book.translated_author} <span style="font-size: 0.85em; color: var(--text-muted); font-weight: normal; margin-left: 4px;">(${book.author})</span>`
+                            : book.author;
+                            
                         item.innerHTML = `
-                            <div>
-                                <div class="search-item-title">${book.title}</div>
-                                <div class="search-item-author">Tác giả: ${book.author}</div>
+                            <div style="flex: 1; min-width: 0; padding-right: 8px;">
+                                <div class="search-item-title" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${book.title}">${displayTitle}</div>
+                                <div class="search-item-author" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${book.author}">Tác giả: ${displayAuthor}</div>
                             </div>
-                            <div style="font-size: 0.75rem; color: var(--border-focus); font-weight: bold;">ID: ${book.book_id}</div>
+                            <div style="font-size: 0.75rem; color: var(--border-focus); font-weight: bold; white-space: nowrap;">ID: ${book.book_id}</div>
                         `;
                         item.addEventListener("click", () => {
                             // Highlight item
@@ -1115,8 +1146,16 @@
 
             try {
                 const source = selectSource.value;
-                const response = await fetch(`/api/catalog?book_url=${encodeURIComponent(bookUrl)}&source=${source}`);
+                const baseUrl = inputBaseUrl.value.trim();
+                const response = await fetch(`/api/catalog?book_url=${encodeURIComponent(bookUrl)}&source=${source}&base_url=${encodeURIComponent(baseUrl)}`);
                 const data = await response.json();
+
+                if (!response.ok) {
+                    const errMsg = data.detail || "Không lấy được mục lục truyện!";
+                    catalogList.innerHTML = `<div style="text-align: center; color: var(--color-warning); padding: 0.5rem; font-size: 0.8rem; line-height: 1.4;">${errMsg}</div>`;
+                    logToConsole(`[-] Lỗi tải mục lục: ${errMsg}`, "warning");
+                    return;
+                }
 
                 if (data.status === "success" && data.chapters.length > 0) {
                     catalogList.innerHTML = "";

@@ -180,3 +180,172 @@ class MetruyenchuvnParser(BaseSourceParser):
         except Exception as e:
             print(f"\n{Color.RED}[✗] Lỗi khi xác định chương kế tiếp: {e}{Color.RESET}")
             return None
+
+    def _search_via_ddg(self, driver: Any, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện qua DuckDuckGo HTML search cho metruyenchuvn."""
+        from bs4 import BeautifulSoup
+        import urllib.parse
+        from urllib.parse import urlparse
+        
+        try:
+            parsed = urlparse(self.base_url)
+            domain = parsed.netloc
+            if domain.startswith("www."):
+                domain = domain[4:]
+            home_url = f"{parsed.scheme}://{parsed.netloc}"
+            
+            query = f"site:{domain} {keyword}"
+            url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
+            
+            driver.get(url)
+            time.sleep(1.5)
+            
+            html = driver.page_source
+            soup = BeautifulSoup(html, "html.parser")
+            results = []
+            seen_ids = set()
+            
+            for a in soup.find_all("a", class_="result__url"):
+                href = a.get("href", "").strip()
+                match = re.search(r'uddg=([^&]+)', href)
+                if match:
+                    actual_url = urllib.parse.unquote(match.group(1))
+                else:
+                    actual_url = a.get_text(strip=True)
+                    
+                parsed_actual = urlparse(actual_url)
+                if domain not in parsed_actual.netloc:
+                    continue
+                    
+                path = parsed_actual.path.strip("/")
+                if not path:
+                    continue
+                    
+                # Bỏ qua chương truyện
+                if "/chuong-" in actual_url or "chuong-" in path:
+                    continue
+                    
+                parts = path.split("/")
+                book_id = parts[0]
+                
+                if book_id in ["login", "register", "contact", "search", "api", "tac-gia", "the-loai", "danh-sach"]:
+                    continue
+                    
+                if book_id in seen_ids:
+                    continue
+                seen_ids.add(book_id)
+                
+                title_tag = a.find_previous("a", class_="result__a")
+                title = "Unknown"
+                if title_tag:
+                    title = title_tag.get_text(strip=True)
+                    title = title.replace("- metruyenchuvn", "")
+                    title = title.replace("- Mê Truyện Chữ", "")
+                    title = re.sub(r' - Chương.*$', '', title)
+                    title = re.sub(r' Full.*$', '', title)
+                    title = title.strip()
+                
+                results.append(BookSearchResult(
+                    book_id=book_id,
+                    title=title,
+                    author="Unknown",
+                    book_url=f"{home_url}/{book_id}",
+                    status="",
+                    latest_chapter=""
+                ))
+            return results
+        except Exception as e:
+            print(f"{Color.YELLOW}[WARN] Lỗi tìm kiếm qua DuckDuckGo: {e}. Đang thử công cụ khác...{Color.RESET}")
+            return []
+
+    def _search_via_yahoo(self, driver: Any, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện qua Yahoo Search cho metruyenchuvn."""
+        from bs4 import BeautifulSoup
+        import urllib.parse
+        from urllib.parse import urlparse, unquote
+        
+        try:
+            parsed = urlparse(self.base_url)
+            domain = parsed.netloc
+            if domain.startswith("www."):
+                domain = domain[4:]
+            home_url = f"{parsed.scheme}://{parsed.netloc}"
+            
+            query = f"site:{domain} {keyword}"
+            url = "https://search.yahoo.com/search?p=" + urllib.parse.quote(query)
+            
+            driver.get(url)
+            time.sleep(1.5)
+            
+            html = driver.page_source
+            soup = BeautifulSoup(html, "html.parser")
+            results = []
+            seen_ids = set()
+            
+            items = soup.select(".algo-title, .compTitle h3 a, #web a")
+            
+            for a in items:
+                href = a.get("href", "").strip()
+                if not href:
+                    continue
+                
+                match = re.search(r'/RU=([^/&]+)', href)
+                if match:
+                    actual_url = unquote(match.group(1))
+                else:
+                    actual_url = href
+                    
+                parsed_actual = urlparse(actual_url)
+                if domain not in parsed_actual.netloc:
+                    continue
+                    
+                path = parsed_actual.path.strip("/")
+                if not path:
+                    continue
+                    
+                # Bỏ qua chương truyện
+                if "/chuong-" in actual_url or "chuong-" in path:
+                    continue
+                    
+                parts = path.split("/")
+                book_id = parts[0]
+                
+                if book_id in ["login", "register", "contact", "search", "api", "tac-gia", "the-loai", "danh-sach"]:
+                    continue
+                    
+                if book_id in seen_ids:
+                    continue
+                seen_ids.add(book_id)
+                
+                h3_el = a.find("h3")
+                if h3_el:
+                    title = h3_el.get_text(strip=True)
+                else:
+                    title = a.get_text(strip=True)
+                    
+                title = title.replace("- metruyenchuvn", "")
+                title = title.replace("- Mê Truyện Chữ", "")
+                title = re.sub(r' - Chương.*$', '', title)
+                title = re.sub(r' Full.*$', '', title)
+                title = title.strip()
+                
+                results.append(BookSearchResult(
+                    book_id=book_id,
+                    title=title,
+                    author="Unknown",
+                    book_url=f"{home_url}/{book_id}",
+                    status="",
+                    latest_chapter=""
+                ))
+            return results
+        except Exception as e:
+            print(f"{Color.YELLOW}[WARN] Lỗi tìm kiếm qua Yahoo: {e}{Color.RESET}")
+            return []
+
+    def search_book(self, driver: Any, keyword: str) -> list[BookSearchResult]:
+        """Tìm kiếm truyện theo từ khóa qua DuckDuckGo và Yahoo Search."""
+        ddg_results = self._search_via_ddg(driver, keyword)
+        if ddg_results:
+            return ddg_results
+            
+        return self._search_via_yahoo(driver, keyword)

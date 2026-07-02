@@ -23,3 +23,6 @@ test_output/
 Gemini-API/cookies.json
 Gemini-API/api_keys.json
 
+# File thư viện từ sinh ra trên mỗi máy
+global_glossary.json
+

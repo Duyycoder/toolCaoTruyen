@@ -49,9 +49,7 @@ class BookSearcher:
         try:
             return self.parser.search_book(self._driver, keyword)
         except NotImplementedError:
-            print(f"{Color.RED}[✗] Nguồn truyện này không hỗ trợ "
-                  f"tìm kiếm.{Color.RESET}")
-            return []
+            raise
         except Exception as e:
             print(f"{Color.RED}[✗] Lỗi tìm kiếm: {e}{Color.RESET}")
             return []
@@ -69,9 +67,7 @@ class BookSearcher:
         try:
             return self.parser.get_catalog(self._driver, book_url)
         except NotImplementedError:
-            print(f"{Color.RED}[✗] Nguồn truyện này không hỗ trợ "
-                  f"lấy mục lục.{Color.RESET}")
-            return []
+            raise
         except Exception as e:
             print(f"{Color.RED}[✗] Lỗi lấy mục lục: {e}{Color.RESET}")
             return []
