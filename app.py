@@ -201,11 +201,13 @@ async def translate_filename_fn(filename: str, translator) -> str:
     if ext.lower() != ".md":
         return filename
         
-    # Tìm prefix số (ví dụ: "0001_", "1.", "Chương 1 - ")
-    match = re.match(r"^(\d+[_.-]?\s*|Chapter\s*\d+[_.-]?\s*|Chương\s*\d+[_.-]?\s*)(.*)$", base_name, re.IGNORECASE)
+    # Tách "Chương 0002 - 第2章..." thành prefix "Chương 0002 - " và tiêu đề "第2章...".
+    # Dấu phân cách (- _ .) phải nằm trong prefix để tên file dịch giữ đúng định dạng
+    # "Chương NNNN - [VI] Tiêu đề" mà các bước lọc trùng/TTS phía sau nhận diện.
+    match = re.match(r"^((?:Chapter|Chương)?\s*\d+)(\s*[-_.]?\s*)(.*)$", base_name, re.IGNORECASE)
     if match:
-        prefix = match.group(1)
-        title_to_translate = match.group(2).strip()
+        prefix = match.group(1) + match.group(2)
+        title_to_translate = match.group(3).strip()
     else:
         prefix = ""
         title_to_translate = base_name.strip()
@@ -234,7 +236,7 @@ async def translate_filename_fn(filename: str, translator) -> str:
         if len(sanitized) > 80:
             sanitized = sanitized[:80].strip()
         if sanitized:
-            return f"{prefix}{sanitized}{ext}"
+            return f"{prefix}[VI] {sanitized}{ext}"
     except Exception as e:
         print(f"[WARN] Không thể dịch tên file '{filename}': {e}")
         

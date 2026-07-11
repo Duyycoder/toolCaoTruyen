@@ -34,6 +34,24 @@ class Shuba69Parser(BaseSourceParser):
         """Tạo URL đầy đủ của chương truyện từ ID truyện và ID chương."""
         return f"{self.base_url}/{story_id}/{chapter_id}"
 
+    def get_book_url(self, story_id: Any = None, sample_chapter_url: Optional[str] = None) -> Optional[str]:
+        """Suy ra URL trang truyện (mục lục) từ story_id hoặc URL một chương bất kỳ."""
+        book_id = None
+        for candidate in (str(story_id or "").strip(), (sample_chapter_url or "").strip()):
+            if not candidate:
+                continue
+            if re.fullmatch(r"\d+", candidate):
+                book_id = candidate
+                break
+            m = re.search(r"/book/(\d+)", candidate) or re.search(r"/txt/(\d+)/", candidate)
+            if m:
+                book_id = m.group(1)
+                break
+        if not book_id:
+            return None
+        home_url = re.sub(r"/txt/?$", "", self.base_url)
+        return f"{home_url}/book/{book_id}.htm"
+
     def get_html(
         self,
         driver: Any,

@@ -111,4 +111,9 @@ class BaseSourceParser(ABC):
             f"{self.__class__.__name__} không hỗ trợ lấy mục lục chương."
         )
 
+    def get_book_url(self, story_id: Any = None, sample_chapter_url: Optional[str] = None) -> Optional[str]:
+        """Suy ra URL trang truyện (chứa mục lục) từ story_id hoặc URL một chương bất kỳ.
+        Subclass override nếu site hỗ trợ. Default: None (không hỗ trợ)."""
+        return None
+
 
