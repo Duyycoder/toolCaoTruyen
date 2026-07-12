@@ -532,7 +532,15 @@ class GeminiTranslator(TranslatorEngine):
             translated_chunk = translated_chunks[i - 1]
             orig_paras = [p.strip() for p in chunk.split("\n\n") if p.strip()]
             trans_paras = [p.strip() for p in translated_chunk.split("\n\n") if p.strip()]
-            
+
+            if len(orig_paras) != len(trans_paras):
+                # Model chuyên dịch (MT) thường trả về mỗi đoạn trên MỘT dòng,
+                # làm mất dòng trống giữa các đoạn. Thử căn chỉnh lại theo dòng đơn
+                # trước khi bỏ cuộc: nếu số DÒNG khớp số đoạn gốc thì ghép 1-1.
+                trans_lines = [l.strip() for l in translated_chunk.split("\n") if l.strip()]
+                if len(trans_lines) == len(orig_paras):
+                    trans_paras = trans_lines
+
             if len(orig_paras) == len(trans_paras):
                 for op, tp in zip(orig_paras, trans_paras):
                     paragraph_mappings.append((op, tp, i))
@@ -648,7 +656,8 @@ class GeminiTranslator(TranslatorEngine):
                     "chunk_index": chunk_index,
                     "char_position_start": para_start_pos,
                     "reason": p_reason if p_reason else "leak sau cả 2 lớp",
-                    "original_text_preview": orig_p[:60]
+                    "original_text_preview": orig_p[:60],
+                    "original_text": orig_p
                 })
 
             if p_status == "direct_success":
@@ -695,6 +704,9 @@ class GeminiTranslator(TranslatorEngine):
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(translated_text)
 
+        # Cập nhật vị trí chính xác (ký tự + số dòng) của các đoạn lỗi trong file output
+        self.refresh_failed_positions(translated_text)
+
         # Write .translation_report.json alongside the output file
         import datetime
         report = {
@@ -711,5 +723,6 @@ class GeminiTranslator(TranslatorEngine):
         
         input_base = os.path.splitext(os.path.basename(input_path))[0]
         report_path = os.path.join(os.path.dirname(output_path), f"{input_base}.translation_report.json")
+        self.last_report_path = report_path
         with open(report_path, "w", encoding="utf-8") as rf:
             json.dump(report, rf, ensure_ascii=False, indent=2)

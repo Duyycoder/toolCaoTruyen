@@ -762,18 +762,18 @@ class Shuba69Parser(BaseSourceParser):
                     index=index
                 ))
                 
-            # Kiểm tra thứ tự ngược (mới nhất ở đầu)
+            # Sắp xếp theo ID chương tăng dần (ID trên 69shuba tăng theo thứ tự chương).
+            # Không tin thứ tự link trên trang: đầu trang thường có khối "chương mới nhất"
+            # làm lệch thứ tự và lệch số chương khi tải tiếp theo mục lục.
             if len(chapters) >= 2:
                 try:
-                    first_id = int(chapters[0].chapter_id)
-                    last_id = int(chapters[-1].chapter_id)
-                    if first_id > last_id:
-                        chapters.reverse()
-                        for i, ch in enumerate(chapters, 1):
-                            ch.index = i
+                    chapters.sort(key=lambda c: int(c.chapter_id))
+                    for i, ch in enumerate(chapters, 1):
+                        ch.index = i
                 except ValueError:
+                    # ID không phải số: giữ nguyên thứ tự trên trang (như hành vi cũ)
                     pass
-                    
+
             return chapters
         except Exception as e:
             print(f"{Color.RED}[✗] Lỗi khi lấy mục lục: {e}{Color.RESET}")

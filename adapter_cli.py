@@ -151,7 +151,9 @@ def handle_translate(args):
                 model=gemini_offline_model,
                 leak_threshold_percent=leak_threshold
             )
-        elif gemini_api_key and gemini_api_key.strip():
+        # Engine ollama chạy offline hoàn toàn: trích xuất từ điển cũng dùng chính
+        # Ollama (translator), không tạo extractor Gemini dù có API key trong config
+        elif engine_type != "ollama" and gemini_api_key and gemini_api_key.strip():
             gemini_extractor = TRANSLATOR_ENGINES["gemini"](
                 api_key=gemini_api_key,
                 model=gemini_model,
@@ -198,6 +200,21 @@ def handle_translate(args):
                     gemini_extractor.set_common_idioms(idioms)
 
         translator.set_glossary(combined_glossary)
+
+        # Model chuyên dịch (MT) không làm được trích xuất JSON -> bỏ qua auto-extract;
+        # glossary có sẵn (global + story) vẫn được áp dụng qua template thuật ngữ
+        translator_prompt_style = getattr(translator, "prompt_style", "chat")
+        if auto_extract_glossary and gemini_extractor is None and translator_prompt_style != "chat":
+            auto_extract_glossary = False
+            log_json("file_log", {
+                "message": f"Model chuyên dịch ({translator_prompt_style}) không hỗ trợ trích xuất từ điển tự động — bỏ qua bước trích xuất. Glossary có sẵn vẫn được áp dụng khi dịch."
+            })
+
+        if auto_extract_glossary:
+            extract_engine_name = engine_type if gemini_extractor is None else (
+                "gemini_api" if engine_type == "gemini_api" else "gemini"
+            )
+            log_json("file_log", {"message": f"Trích xuất từ điển tự động chạy bằng engine: {extract_engine_name}"})
 
         # Translation execution loop
         for idx, file_path in enumerate(files_to_translate, 1):
@@ -269,6 +286,45 @@ def handle_translate(args):
             report = getattr(translator, "last_report", {})
             failed_p = len(report.get("failed_chunks", []))
             total_p = report.get("total_paras", 0)
+
+            # Tự động dịch vá các đoạn lỗi ([[MISSING_CHUNK]]) và ghép lại vào file
+            # Thử tối đa 3 vòng: mỗi vòng Ollama dịch lại các đoạn còn marker
+            MAX_REPAIR_ROUNDS = 3
+            if failed_p > 0:
+                for repair_round in range(1, MAX_REPAIR_ROUNDS + 1):
+                    log_json("file_repair_start", {
+                        "index": idx,
+                        "file": translated_file_name,
+                        "failed_paragraphs": failed_p,
+                        "round": repair_round,
+                        "max_rounds": MAX_REPAIR_ROUNDS
+                    })
+                    try:
+                        remaining = translator.repair_missing_chunks(
+                            output_path,
+                            progress_callback=lambda msg: log_json("file_log", {"message": msg})
+                        )
+                        repaired_this_round = failed_p - remaining
+                        log_json("file_repair_done", {
+                            "index": idx,
+                            "file": translated_file_name,
+                            "round": repair_round,
+                            "repaired": repaired_this_round,
+                            "still_failed": remaining
+                        })
+                        failed_p = remaining
+                        if failed_p == 0:
+                            break  # Tất cả đã được vá
+                        if repaired_this_round == 0 and repair_round >= 2:
+                            # 2 vòng liên tiếp không vá thêm được → dừng sớm
+                            log_json("file_log", {
+                                "message": f"Dừng vá sớm sau vòng {repair_round}: không vá thêm được đoạn nào."
+                            })
+                            break
+                    except Exception as ex:
+                        log_json("file_repair_warn", {"file": translated_file_name, "error": str(ex), "round": repair_round})
+                        break
+
 
             if failed_p > 0:
                 log_json("file_failed", {

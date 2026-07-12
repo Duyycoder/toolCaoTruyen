@@ -3,6 +3,13 @@ setlocal
 
 cd /d "%~dp0"
 set PYTHONPATH=%~dp0
+set "VENV_PY=%~dp0..\.venv\Scripts\python.exe"
+if not exist "%VENV_PY%" (
+    echo [ERROR] Khong tim thay .venv cua toolCaoTruyen.
+    echo         Hay chay setup.bat o thu muc goc du an truoc.
+    pause
+    exit /b 1
+)
 
 title Gemini API Server [Port 7860]
 color 0A
@@ -23,14 +30,14 @@ if not exist cookies.json (
 
 if not exist api_keys.json (
     echo [INFO] Creating first API key...
-    python -m server.config create-key default
+    "%VENV_PY%" -m server.config create-key default
     echo.
 )
 
 echo  Starting server... Press Ctrl+C to stop.
 echo.
 
-python -m uvicorn server.main:app --host 0.0.0.0 --port 7860
+"%VENV_PY%" -m uvicorn server.main:app --host 0.0.0.0 --port 7860
 
 echo.
 echo  Server stopped.

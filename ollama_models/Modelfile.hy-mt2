@@ -1,0 +1,21 @@
+## Modelfile cho HY-MT2-1.8B (Tencent) — model CHUYÊN DỊCH 36 ngôn ngữ (có tiếng Việt)
+##
+## Bắt buộc phải tạo model qua Modelfile này thay vì dùng trực tiếp bản pull từ
+## hf.co: template tự sinh khi convert GGUF bị hỏng (chứa literal "onse }}" và
+## không chèn .Prompt) khiến model chỉ trả về chuỗi rác "onse".
+## Template dưới đây viết lại đúng theo tokenizer.chat_template gốc trong GGUF.
+##
+## Cách cài (xem install_hy_mt2.bat):
+##   ollama pull hf.co/tencent/Hy-MT2-1.8B-GGUF:Q8_0
+##   ollama create hy-mt2:1.8b -f Modelfile.hy-mt2
+##   ollama rm hf.co/tencent/Hy-MT2-1.8B-GGUF:Q8_0
+
+FROM hf.co/tencent/Hy-MT2-1.8B-GGUF:Q8_0
+TEMPLATE """{{ if .System }}<｜hy_begin▁of▁sentence｜>{{ .System }}<｜hy_place▁holder▁no▁3｜>{{ else }}<｜hy_begin▁of▁sentence｜>{{ end }}<｜hy_User｜>{{ .Prompt }}<｜hy_Assistant｜>{{ .Response }}"""
+PARAMETER stop <｜hy_place▁holder▁no▁2｜>
+PARAMETER stop <｜hy_end▁of▁sentence｜>
+PARAMETER stop <｜hy_EOT｜>
+PARAMETER temperature 0.7
+PARAMETER top_p 0.6
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1.05
