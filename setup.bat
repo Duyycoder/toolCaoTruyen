@@ -216,27 +216,36 @@ if %errorlevel% neq 0 (
 echo [OK] Da ket noi voi Ollama server.
 echo.
 
-rem === Tai Model qwen2.5:7b-instruct ===
+rem === Tai Model qwen2.5:3b-instruct (Lightweight Translation Model) ===
+echo [INFO] Dang kiem tra Model qwen2.5:3b-instruct...
+"%OLLAMA_CMD%" list | findstr "qwen2.5:3b-instruct" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [OK] Model qwen2.5:3b-instruct da co san.
+) else (
+    echo [INFO] Model qwen2.5:3b-instruct chua duoc tai. Dang tai...
+    "%OLLAMA_CMD%" pull qwen2.5:3b-instruct
+)
+
+rem === Tai Model qwen2.5:7b-instruct (Main LLM Model) ===
 echo [INFO] Dang kiem tra Model qwen2.5:7b-instruct...
 "%OLLAMA_CMD%" list | findstr "qwen2.5:7b-instruct" >nul 2>&1
 if %errorlevel% equ 0 (
     echo [OK] Model qwen2.5:7b-instruct da co san.
-    goto :setup_complete
+) else (
+    echo [INFO] Model qwen2.5:7b-instruct chua duoc tai. Dang tai...
+    "%OLLAMA_CMD%" pull qwen2.5:7b-instruct
 )
 
-echo [INFO] Model qwen2.5:7b-instruct chua duoc tai.
-echo ------------------------------------------------------------
-echo   [WARN] CANH BAO: Dung luong model khoang 4.7 GB.
-echo   Qua trinh tai se mat vai phut tuy thuoc vao mang cua ban.
-echo   Chac chan o dia con trong hon 5GB.
-echo ------------------------------------------------------------
-echo.
-
-"%OLLAMA_CMD%" pull qwen2.5:7b-instruct
-if %errorlevel% neq 0 (
-    echo [ERROR] Tai model qwen2.5:7b-instruct that bai!
-    pause
-    exit /b 1
+rem === Cai dat Model chuyen dich hy-mt2:1.8b ===
+echo [INFO] Dang kiem tra Model hy-mt2:1.8b...
+"%OLLAMA_CMD%" list | findstr "hy-mt2:1.8b" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [OK] Model hy-mt2:1.8b da co san.
+) else (
+    echo [INFO] Model hy-mt2:1.8b chua duoc tai. Dang cai dat...
+    pushd ollama_models
+    call install_hy_mt2.bat
+    popd
 )
 
 :setup_complete
