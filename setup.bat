@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 rem Set console page to standard US/English (OEM)
 chcp 437 >nul 2>&1
 title Cau hinh va Cai dat he thong Tool Cao Truyen
@@ -137,7 +137,7 @@ goto :setup_ollama_install
 :setup_ollama_install
 echo.
 echo ============================================================
-echo    CAU HINH OLLAMA & MODEL AI
+echo    CAU HINH OLLAMA ^& MODEL AI
 echo ============================================================
 echo.
 

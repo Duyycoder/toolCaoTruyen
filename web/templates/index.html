@@ -790,9 +790,28 @@
             </div>
 
             <!-- Tự động trích xuất Glossary -->
-            <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: -0.5rem; margin-bottom: 1rem;">
+            <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: -0.5rem; margin-bottom: 0.5rem;">
                 <input type="checkbox" id="check-auto-extract-glossary" checked style="width: 20px; height: 20px; margin: 0; cursor: pointer;">
-                <label for="check-auto-extract-glossary" style="margin-bottom: 0; cursor: pointer; font-weight: normal;">Tự động quét & trích xuất thuật ngữ mới (Sử dụng Gemini API)</label>
+                <label for="check-auto-extract-glossary" style="margin-bottom: 0; cursor: pointer; font-weight: normal;">Tự động quét & trích xuất thuật ngữ mới</label>
+            </div>
+
+            <!-- Block cấu hình chi tiết trích xuất Glossary -->
+            <div id="block-glossary-extract-config" style="display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem; padding-left: 1.25rem; border-left: 2px solid var(--accent-light, #3b82f6);">
+                <div class="form-group" style="margin-bottom: 0.25rem;">
+                    <label for="select-glossary-engine" style="font-size: 0.9rem;">Engine trích xuất từ điển</label>
+                    <select id="select-glossary-engine" style="padding: 0.35rem 0.5rem; font-size: 0.9rem;">
+                        <option value="gemini" selected>Gemini API (Online)</option>
+                        <option value="ollama">Ollama (Offline Local)</option>
+                        <option value="gemini_api">Gemini API (Offline/Local)</option>
+                        <option value="same_as_trans">Sử dụng cùng Engine dịch thuật</option>
+                    </select>
+                </div>
+                <div id="block-glossary-ollama-config" style="display: none; margin-bottom: 0.25rem;">
+                    <label for="select-glossary-ollama-model" style="font-size: 0.9rem;">Model Ollama trích xuất</label>
+                    <select id="select-glossary-ollama-model" style="padding: 0.35rem 0.5rem; font-size: 0.9rem;">
+                        <!-- Sẽ load tự động -->
+                    </select>
+                </div>
             </div>
 
             <!-- Nút bắt đầu dịch -->
@@ -1016,10 +1035,16 @@
                     inputGeminiOfflineModel.value = config.translator.gemini_offline_model || "gemini-2.5-flash";
                     inputLeakThreshold.value = config.translator.leak_threshold_percent || 10;
                     checkAutoExtractGlossary.checked = config.translator.auto_extract_glossary !== false;
+                    blockGlossaryExtractConfig.style.display = checkAutoExtractGlossary.checked ? "flex" : "none";
+                    
+                    const glossaryEngine = config.translator.glossary_extract_engine || "gemini";
+                    selectGlossaryEngine.value = glossaryEngine;
+                    blockGlossaryOllamaConfig.style.display = glossaryEngine === "ollama" ? "block" : "none";
+                    
                     selectStoryGenre.value = config.translator.genre || "tien_hiep";
                     
                     toggleEngineConfigBlocks(config.translator.engine);
-                    await loadOllamaModelsRegistry(config.translator.ollama_model);
+                    await loadOllamaModelsRegistry(config.translator.ollama_model, config.translator.glossary_extract_ollama_model);
                     // Kiểm tra cookies Gemini Offline sau khi tải config
                     await checkGeminiCookies();
                 }
@@ -1388,6 +1413,10 @@
         
         const inputLeakThreshold = document.getElementById("input-leak-threshold");
         const checkAutoExtractGlossary = document.getElementById("check-auto-extract-glossary");
+        const blockGlossaryExtractConfig = document.getElementById("block-glossary-extract-config");
+        const selectGlossaryEngine = document.getElementById("select-glossary-engine");
+        const blockGlossaryOllamaConfig = document.getElementById("block-glossary-ollama-config");
+        const selectGlossaryOllamaModel = document.getElementById("select-glossary-ollama-model");
         const btnStartTranslate = document.getElementById("btn-start-translate");
         
         const transProgressPercent = document.getElementById("trans-progress-percent");
@@ -1442,6 +1471,14 @@
             checkGeminiCookies();
         });
 
+        checkAutoExtractGlossary.addEventListener("change", () => {
+            blockGlossaryExtractConfig.style.display = checkAutoExtractGlossary.checked ? "flex" : "none";
+        });
+
+        selectGlossaryEngine.addEventListener("change", () => {
+            blockGlossaryOllamaConfig.style.display = selectGlossaryEngine.value === "ollama" ? "block" : "none";
+        });
+
         // Load languages registry
         async function loadLanguages() {
             try {
@@ -1460,21 +1497,36 @@
         }
 
         // Load Ollama models registry
-        async function loadOllamaModelsRegistry(selectedModel = null) {
+        async function loadOllamaModelsRegistry(selectedModel = null, selectedGlossaryModel = null) {
             try {
                 const res = await fetch("/api/ollama/models");
                 const data = await res.json();
                 selectOllamaModel.innerHTML = "";
+                selectGlossaryOllamaModel.innerHTML = "";
+                
+                // Them tuy chon mac dinh cho glossary model
+                const defaultOpt = document.createElement("option");
+                defaultOpt.value = "";
+                defaultOpt.textContent = "Sử dụng Model mặc định của Ollama";
+                selectGlossaryOllamaModel.appendChild(defaultOpt);
                 
                 for (const [modelName, info] of Object.entries(data.models)) {
                     const opt = document.createElement("option");
                     opt.value = modelName;
                     opt.textContent = `${info.label} (${modelName})`;
                     selectOllamaModel.appendChild(opt);
+
+                    const opt2 = document.createElement("option");
+                    opt2.value = modelName;
+                    opt2.textContent = `${info.label} (${modelName})`;
+                    selectGlossaryOllamaModel.appendChild(opt2);
                 }
                 
                 if (selectedModel && data.models[selectedModel]) {
                     selectOllamaModel.value = selectedModel;
+                }
+                if (selectedGlossaryModel && (selectedGlossaryModel === "" || data.models[selectedGlossaryModel])) {
+                    selectGlossaryOllamaModel.value = selectedGlossaryModel;
                 }
                 
                 await checkOllamaModelAvailability(selectOllamaModel.value);
@@ -1710,7 +1762,9 @@
                         gemini_offline_base_url: geminiOfflineBaseUrl,
                         gemini_offline_model: geminiOfflineModel,
                         auto_extract_glossary: checkAutoExtractGlossary.checked,
-                        genre: selectStoryGenre.value
+                        genre: selectStoryGenre.value,
+                        glossary_extract_engine: selectGlossaryEngine.value,
+                        glossary_extract_ollama_model: selectGlossaryOllamaModel.value
                     })
                 });
             } catch (err) {
@@ -1742,7 +1796,9 @@
                     leak_threshold_percent: leakThreshold,
                     auto_extract_glossary: checkAutoExtractGlossary.checked,
                     source_lang: selectSourceLang.value,
-                    genre: selectStoryGenre.value
+                    genre: selectStoryGenre.value,
+                    glossary_extract_engine: selectGlossaryEngine.value,
+                    glossary_extract_ollama_model: selectGlossaryOllamaModel.value
                 };
                 wsTranslate.send(JSON.stringify(payload));
             };

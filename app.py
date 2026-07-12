@@ -258,6 +258,8 @@ class TranslatorConfigModel(BaseModel):
     gemini_offline_model: Optional[str] = "gemini-2.5-flash"
     auto_extract_glossary: Optional[bool] = True
     genre: Optional[str] = "tien_hiep"
+    glossary_extract_engine: Optional[str] = "gemini"
+    glossary_extract_ollama_model: Optional[str] = ""
 
 # Endpoint trả về trang HTML chính
 @app.get("/", response_class=HTMLResponse)
@@ -683,6 +685,8 @@ async def websocket_translate(websocket: WebSocket):
         output_dir_custom = config.get("output_dir", "").strip()
         auto_extract_glossary = config.get("auto_extract_glossary", True)
         genre = config.get("genre", "tien_hiep")
+        glossary_extract_engine = config.get("glossary_extract_engine", "gemini")
+        glossary_extract_ollama_model = config.get("glossary_extract_ollama_model", "")
         
         # Thu nhập danh sách file dịch và xác định thư mục truyện
         files_to_translate = []
@@ -731,21 +735,6 @@ async def websocket_translate(websocket: WebSocket):
         # Khởi tạo Engine tương ứng
         from translator import TRANSLATOR_ENGINES, OLLAMA_MODELS
         
-        # Khởi tạo gemini_extractor độc lập nếu có api_key để hỗ trợ trích xuất glossary
-        gemini_extractor = None
-        if gemini_api_key and gemini_api_key.strip():
-            try:
-                gemini_extractor = TRANSLATOR_ENGINES["gemini"](
-                    api_key=gemini_api_key,
-                    model=gemini_model,
-                    leak_threshold_percent=leak_threshold
-                )
-            except Exception as e:
-                await websocket.send_json({
-                    "event": "log",
-                    "message": f"[WARN] Không thể khởi tạo gemini_extractor độc lập: {e}"
-                })
-
         if engine_type == "ollama":
             chunk_size = OLLAMA_MODELS.get(ollama_model, {}).get("chunk_size_chars", 350)
             translator = TRANSLATOR_ENGINES["ollama"](
@@ -754,14 +743,11 @@ async def websocket_translate(websocket: WebSocket):
                 leak_threshold_percent=leak_threshold
             )
         elif engine_type == "gemini":
-            if gemini_extractor:
-                translator = gemini_extractor
-            else:
-                translator = TRANSLATOR_ENGINES["gemini"](
-                    api_key=gemini_api_key,
-                    model=gemini_model,
-                    leak_threshold_percent=leak_threshold
-                )
+            translator = TRANSLATOR_ENGINES["gemini"](
+                api_key=gemini_api_key,
+                model=gemini_model,
+                leak_threshold_percent=leak_threshold
+            )
         elif engine_type == "gemini_api":
             translator = TRANSLATOR_ENGINES["gemini_api"](
                 api_key=gemini_offline_key,
@@ -776,10 +762,64 @@ async def websocket_translate(websocket: WebSocket):
             })
             return
 
-        # Cấu hình Genre cho các translator
+        # Khởi tạo glossary_extractor độc lập dựa trên cấu hình chọn mô hình trích xuất
+        glossary_extractor = None
+        if auto_extract_glossary:
+            if glossary_extract_engine == "same_as_trans":
+                glossary_extractor = translator
+            elif glossary_extract_engine == "gemini":
+                if engine_type == "gemini":
+                    glossary_extractor = translator
+                elif gemini_api_key and gemini_api_key.strip():
+                    try:
+                        glossary_extractor = TRANSLATOR_ENGINES["gemini"](
+                            api_key=gemini_api_key,
+                            model=gemini_model,
+                            leak_threshold_percent=leak_threshold
+                        )
+                    except Exception as e:
+                        await websocket.send_json({
+                            "event": "log",
+                            "message": f"[WARN] Không thể khởi tạo gemini_extractor độc lập: {e}"
+                        })
+            elif glossary_extract_engine == "ollama":
+                model_to_use = glossary_extract_ollama_model or ollama_model
+                if engine_type == "ollama" and model_to_use == ollama_model:
+                    glossary_extractor = translator
+                else:
+                    try:
+                        chunk_size = OLLAMA_MODELS.get(model_to_use, {}).get("chunk_size_chars", 350)
+                        glossary_extractor = TRANSLATOR_ENGINES["ollama"](
+                            model=model_to_use,
+                            max_chunk_chars=chunk_size,
+                            leak_threshold_percent=leak_threshold
+                        )
+                    except Exception as e:
+                        await websocket.send_json({
+                            "event": "log",
+                            "message": f"[WARN] Không thể khởi tạo Ollama extractor độc lập cho '{model_to_use}': {e}"
+                        })
+            elif glossary_extract_engine == "gemini_api":
+                if engine_type == "gemini_api":
+                    glossary_extractor = translator
+                else:
+                    try:
+                        glossary_extractor = TRANSLATOR_ENGINES["gemini_api"](
+                            api_key=gemini_offline_key,
+                            base_url=gemini_offline_base_url,
+                            model=gemini_offline_model,
+                            leak_threshold_percent=leak_threshold
+                        )
+                    except Exception as e:
+                        await websocket.send_json({
+                            "event": "log",
+                            "message": f"[WARN] Không thể khởi tạo gemini_offline_extractor độc lập: {e}"
+                        })
+
+        # Cấu hình Genre cho các translator/extractor
         translator.set_genre(genre)
-        if gemini_extractor:
-            gemini_extractor.set_genre(genre)
+        if glossary_extractor:
+            glossary_extractor.set_genre(genre)
             
         # Nạp từ điển thành ngữ dùng chung (common_idioms.json)
         common_idioms_path = os.path.join(".", "common_idioms.json")
@@ -788,8 +828,8 @@ async def websocket_translate(websocket: WebSocket):
                 with open(common_idioms_path, 'r', encoding='utf-8') as f:
                     common_idioms = json.load(f)
                     translator.set_common_idioms(common_idioms)
-                    if gemini_extractor:
-                        gemini_extractor.set_common_idioms(common_idioms)
+                    if glossary_extractor:
+                        glossary_extractor.set_common_idioms(common_idioms)
             except Exception as e:
                 await websocket.send_json({
                     "event": "log",
@@ -845,8 +885,8 @@ async def websocket_translate(websocket: WebSocket):
                                 text_content = f.read()
                             
                             if text_content.strip():
-                                # Chọn extractor phù hợp: Ưu tiên gemini_extractor nếu khả dụng, nếu không fallback sang translator hiện tại
-                                extractor = gemini_extractor if (gemini_extractor and gemini_extractor.is_available()) else translator
+                                # Chọn extractor phù hợp: Ưu tiên glossary_extractor nếu khả dụng, nếu không fallback sang translator hiện tại
+                                extractor = glossary_extractor if (glossary_extractor and glossary_extractor.is_available()) else translator
                                 
                                 ws_log_callback(f"[->] Đang quét và trích xuất từ mới bằng {extractor.__class__.__name__}...")
                                 new_terms = extractor.extract_glossary_from_text(text_content, translator.glossary)
