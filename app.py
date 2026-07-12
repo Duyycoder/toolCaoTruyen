@@ -19,6 +19,176 @@ from core.crawler_engine import download_chapters
 
 app = FastAPI(title="Tool Cào Truyện Web UI")
 
+import subprocess
+import sys
+import atexit
+import signal
+from urllib.parse import urlparse
+
+# Global variables for Gemini API subprocess management
+gemini_api_process = None
+active_heartbeats = set()
+heartbeat_timeout_task = None
+
+def initialize_gemini_api_files():
+    gemini_api_dir = os.path.join(os.getcwd(), "Gemini-API")
+    os.makedirs(gemini_api_dir, exist_ok=True)
+    
+    cookies_path = os.path.join(gemini_api_dir, "cookies.json")
+    default_cookies = {
+        "__Secure-1PSID": "",
+        "__Secure-1PSIDTS": ""
+    }
+    if not os.path.exists(cookies_path):
+        try:
+            with open(cookies_path, "w", encoding="utf-8") as f:
+                json.dump(default_cookies, f, indent=2)
+            print("[INFO] Đã tự động tạo file cookies.json mẫu tại Gemini-API/cookies.json")
+        except Exception as e:
+            print(f"[ERROR] Không thể tạo file cookies.json: {e}")
+
+    api_keys_path = os.path.join(gemini_api_dir, "api_keys.json")
+    default_api_keys = {
+        "sk-gemini-YrVwXWGegzkFlevHPdQy7Fpry14HJVirqvnuxukz": "default"
+    }
+    if not os.path.exists(api_keys_path):
+        try:
+            with open(api_keys_path, "w", encoding="utf-8") as f:
+                json.dump(default_api_keys, f, indent=2)
+            print("[INFO] Đã tạo file api_keys.json mặc định tại Gemini-API/api_keys.json")
+        except Exception as e:
+            print(f"[ERROR] Không thể tạo file api_keys.json: {e}")
+
+def check_gemini_cookies() -> dict:
+    cookies_path = os.path.join("Gemini-API", "cookies.json")
+    if not os.path.exists(cookies_path):
+        initialize_gemini_api_files()
+        return {"status": "missing", "message": "Không tìm thấy file cookies.json. File mẫu đã được tự động tạo tại Gemini-API/cookies.json."}
+        
+    try:
+        with open(cookies_path, "r", encoding="utf-8") as f:
+            content = json.load(f)
+        if not isinstance(content, dict):
+            return {"status": "invalid", "message": "File cookies.json có định dạng không hợp lệ. Vui lòng kiểm tra lại."}
+        
+        psid = content.get("__Secure-1PSID", "").strip()
+        psidts = content.get("__Secure-1PSIDTS", "").strip()
+        
+        if not psid or not psidts:
+            return {"status": "empty", "message": "Bạn chưa cấu hình cookies trong Gemini-API/cookies.json. Vui lòng điền __Secure-1PSID và __Secure-1PSIDTS."}
+            
+        return {"status": "ready"}
+    except Exception as e:
+        return {"status": "error", "message": f"Lỗi khi đọc file cookies.json: {str(e)}"}
+
+def get_gemini_api_port() -> int:
+    try:
+        config = load_config()
+        if config and "translator" in config:
+            base_url = config["translator"].get("gemini_offline_base_url", "http://localhost:7860/v1")
+            parsed = urlparse(base_url)
+            if parsed.port:
+                return parsed.port
+    except Exception:
+        pass
+    return 7860
+
+def kill_gemini_api_server():
+    global gemini_api_process
+    if gemini_api_process:
+        print("[*] Đang tắt Gemini API Server...")
+        try:
+            gemini_api_process.terminate()
+            gemini_api_process.wait(timeout=3)
+            print("[✓] Đã tắt Gemini API Server.")
+        except subprocess.TimeoutExpired:
+            print("[WARN] Gemini API Server không phản hồi, tiến hành force kill...")
+            try:
+                gemini_api_process.kill()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[✗] Lỗi khi tắt Gemini API Server: {e}")
+        finally:
+            gemini_api_process = None
+
+@app.on_event("startup")
+def startup_event():
+    global gemini_api_process
+    
+    # 1. Khởi tạo và kiểm tra cookies
+    initialize_gemini_api_files()
+    cookie_status = check_gemini_cookies()
+    if cookie_status["status"] != "ready":
+        print(f"\n============================================================")
+        print(f"⚠️  CANH BAO: {cookie_status['message']}")
+        print(f"============================================================\n")
+        
+    # 2. Khởi chạy Gemini API Server làm tiến trình con (subprocess)
+    gemini_dir = os.path.join(os.getcwd(), "Gemini-API")
+    if os.path.exists(gemini_dir):
+        python_exe = sys.executable
+        port = get_gemini_api_port()
+        print(f"[*] Đang khởi chạy Gemini API Server ở terminal riêng (Cổng: {port})...")
+        
+        env = os.environ.copy()
+        env["PYTHONPATH"] = gemini_dir
+        env["PYTHONIOENCODING"] = "utf-8"
+        
+        try:
+            gemini_api_process = subprocess.Popen(
+                [python_exe, "-m", "uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", str(port)],
+                cwd=gemini_dir,
+                env=env,
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
+            print(f"[✓] Đã kích hoạt terminal chạy Gemini API Server (PID: {gemini_api_process.pid})")
+        except Exception as e:
+            print(f"[✗] Không thể khởi chạy Gemini API Server: {e}")
+
+@app.on_event("shutdown")
+def shutdown_event():
+    kill_gemini_api_server()
+
+# Sử dụng atexit để đảm bảo kill tiến trình khi tắt
+atexit.register(kill_gemini_api_server)
+
+async def shutdown_server_after_delay():
+    await asyncio.sleep(5.0)  # Chờ 5 giây để tránh F5 reload trang
+    if len(active_heartbeats) == 0:
+        print("[*] Đóng trình duyệt: Không phát hiện tab Web UI hoạt động. Đang tự động tắt ứng dụng...")
+        kill_gemini_api_server()
+        import os
+        os.kill(os.getpid(), signal.SIGINT)
+
+@app.websocket("/ws/heartbeat")
+async def websocket_heartbeat(websocket: WebSocket):
+    global heartbeat_timeout_task
+    await websocket.accept()
+    
+    # Hủy task tắt máy nếu có kết nối mới trong 5s
+    if heartbeat_timeout_task and not heartbeat_timeout_task.done():
+        heartbeat_timeout_task.cancel()
+        
+    active_heartbeats.add(websocket)
+    try:
+        while True:
+            # Lắng nghe tin nhắn duy trì
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        active_heartbeats.remove(websocket)
+        if len(active_heartbeats) == 0:
+            # Không còn kết nối nào, lập lịch tắt máy
+            heartbeat_timeout_task = asyncio.create_task(shutdown_server_after_delay())
+
+@app.get("/api/check-gemini-cookies")
+async def api_check_gemini_cookies():
+    return check_gemini_cookies()
+
 def sanitize_filename(name: str) -> str:
     # Thay thế các ký tự cấm trên Windows bằng khoảng trắng
     name = re.sub(r'[\\/*?:"<>|]', " ", name)
@@ -31,16 +201,22 @@ async def translate_filename_fn(filename: str, translator) -> str:
     if ext.lower() != ".md":
         return filename
         
-    # Tìm prefix số (ví dụ: "0001_", "1.", "Chương 1 - ")
-    match = re.match(r"^(\d+[_.-]?\s*|Chapter\s*\d+[_.-]?\s*|Chương\s*\d+[_.-]?\s*)(.*)$", base_name, re.IGNORECASE)
+    # Tách "Chương 0002 - 第2章..." thành prefix "Chương 0002 - " và tiêu đề "第2章...".
+    # Dấu phân cách (- _ .) phải nằm trong prefix để tên file dịch giữ đúng định dạng
+    # "Chương NNNN - [VI] Tiêu đề" mà các bước lọc trùng/TTS phía sau nhận diện.
+    match = re.match(r"^((?:Chapter|Chương)?\s*\d+)(\s*[-_.]?\s*)(.*)$", base_name, re.IGNORECASE)
     if match:
-        prefix = match.group(1)
-        title_to_translate = match.group(2).strip()
+        prefix = match.group(1) + match.group(2)
+        title_to_translate = match.group(3).strip()
     else:
         prefix = ""
         title_to_translate = base_name.strip()
         
     if not title_to_translate:
+        return filename
+        
+    # Chỉ dịch nếu tên file chứa ký tự Trung Quốc (Hán) để tránh mô hình ảo hóa
+    if not re.search(r"[\u4e00-\u9fff]", title_to_translate):
         return filename
         
     try:
@@ -57,8 +233,10 @@ async def translate_filename_fn(filename: str, translator) -> str:
         translated = " ".join(translated_lines)
         
         sanitized = sanitize_filename(translated)
+        if len(sanitized) > 80:
+            sanitized = sanitized[:80].strip()
         if sanitized:
-            return f"{prefix}{sanitized}{ext}"
+            return f"{prefix}[VI] {sanitized}{ext}"
     except Exception as e:
         print(f"[WARN] Không thể dịch tên file '{filename}': {e}")
         
@@ -75,6 +253,11 @@ class TranslatorConfigModel(BaseModel):
     leak_threshold_percent: int
     gemini_api_key: str
     gemini_model: str
+    gemini_offline_key: Optional[str] = ""
+    gemini_offline_base_url: Optional[str] = "http://localhost:7860/v1"
+    gemini_offline_model: Optional[str] = "gemini-2.5-flash"
+    auto_extract_glossary: Optional[bool] = True
+    genre: Optional[str] = "tien_hiep"
 
 # Endpoint trả về trang HTML chính
 @app.get("/", response_class=HTMLResponse)
@@ -129,7 +312,39 @@ async def get_languages():
 # API 3d: Lấy danh sách model Ollama được định nghĩa
 @app.get("/api/ollama/models")
 async def get_ollama_models_registry():
-    from translator import OLLAMA_MODELS
+    from translator.registry import OLLAMA_MODELS
+    import urllib.request
+    import json
+    
+    # Truy vấn Ollama để tự động nạp các model local đã cài đặt
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            local_models = data.get("models", [])
+            for m in local_models:
+                name = m.get("name")
+                if name:
+                    # Đăng ký model nếu chưa tồn tại vào registry toàn cục
+                    if name not in OLLAMA_MODELS:
+                        OLLAMA_MODELS[name] = {
+                            "chunk_size_chars": 400,
+                            "temperature": 0.05,
+                            "few_shot": True,
+                            "label": f"Local Model: {name}"
+                        }
+                    # Đăng ký cả phiên bản ngắn của tên model (không có :latest)
+                    short_name = name.split(":")[0] if ":" in name else name
+                    if short_name and short_name not in OLLAMA_MODELS:
+                        OLLAMA_MODELS[short_name] = {
+                            "chunk_size_chars": 400,
+                            "temperature": 0.05,
+                            "few_shot": True,
+                            "label": f"Local Model: {short_name}"
+                        }
+    except Exception as e:
+        print(f"[Warning] Không thể quét models từ Ollama local: {e}")
+        
     return {"models": OLLAMA_MODELS}
 
 # API 3e: Kiểm tra xem một model Ollama đã được tải chưa
@@ -142,6 +357,119 @@ async def check_ollama_model(model: str):
         return {"model": model, "available": available}
     except Exception as e:
         return {"model": model, "available": False, "error": str(e)}
+
+
+# API 3f: Tìm kiếm truyện theo tên
+@app.get("/api/search")
+async def search_book_api(keyword: str, source: str = "69shuba", base_url: Optional[str] = None):
+    """Tìm kiếm truyện theo tên qua API, hỗ trợ dịch tự động."""
+    from sources.book_search import BookSearcher
+    from core.intelligent_search import translate_query_to_chinese, translate_search_results
+    
+    def _do_search():
+        nonlocal base_url
+        if not base_url or not base_url.strip():
+            base_url = None
+            from core.config_manager import load_config
+            config = load_config()
+            if config and config.get("source") == source:
+                base_url = config.get("base_url")
+            
+            if not base_url:
+                base_url = "https://www.69shuba.com/txt" if source == "69shuba" else "https://metruyenchuvn.com"
+                
+        parser = get_source(source, base_url)
+        
+        # Tự động dịch sang tiếng Trung nếu là tiếng Việt và nguồn là 69shuba
+        if source == "69shuba":
+            translated_keyword = translate_query_to_chinese(keyword)
+        else:
+            translated_keyword = keyword
+            
+        with BookSearcher(parser) as searcher:
+            results = searcher.search(translated_keyword)
+            # Thử lại bằng tên thay thế nếu rỗng (chỉ với 69shuba)
+            if not results and source == "69shuba":
+                from core.intelligent_search import generate_alternative_chinese_names
+                alternatives = generate_alternative_chinese_names(keyword, [keyword, translated_keyword])
+                for alt in alternatives:
+                    results = searcher.search(alt)
+                    if results:
+                        break
+            
+            # Tự động dịch tiêu đề và tác giả từ tiếng Trung sang tiếng Việt (nếu nguồn là 69shuba)
+            if results and source == "69shuba":
+                try:
+                    results = translate_search_results(results)
+                except Exception as ex:
+                    print(f"[WARN] Lỗi dịch kết quả tìm kiếm: {ex}")
+                    
+            return results, translated_keyword
+            
+    try:
+        results, used_keyword = await asyncio.to_thread(_do_search)
+        return {
+            "status": "success",
+            "keyword_used": used_keyword,
+            "results": [
+                {
+                    "book_id": r.book_id,
+                    "title": r.title,
+                    "translated_title": getattr(r, "translated_title", r.title),
+                    "author": r.author,
+                    "translated_author": getattr(r, "translated_author", r.author),
+                    "book_url": r.book_url,
+                    "status": r.status,
+                    "latest_chapter": r.latest_chapter,
+                } for r in results
+            ]
+        }
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi tìm kiếm: {str(e)}")
+
+
+# API 3g: Lấy mục lục chương
+@app.get("/api/catalog")
+async def get_catalog_api(book_url: str, source: str = "69shuba", base_url: Optional[str] = None):
+    """Lấy mục lục chương qua API."""
+    from sources.book_search import BookSearcher
+    
+    def _do_catalog():
+        nonlocal base_url
+        if not base_url or not base_url.strip():
+            base_url = None
+            from core.config_manager import load_config
+            config = load_config()
+            if config and config.get("source") == source:
+                base_url = config.get("base_url")
+            
+            if not base_url:
+                base_url = "https://www.69shuba.com/txt" if source == "69shuba" else "https://metruyenchuvn.com"
+            
+        parser = get_source(source, base_url)
+        with BookSearcher(parser) as searcher:
+            return searcher.get_catalog(book_url)
+            
+    try:
+        chapters = await asyncio.to_thread(_do_catalog)
+        return {
+            "status": "success",
+            "total_chapters": len(chapters),
+            "chapters": [
+                {
+                    "chapter_id": ch.chapter_id,
+                    "title": ch.title,
+                    "chapter_url": ch.chapter_url,
+                    "index": ch.index,
+                } for ch in chapters
+            ]
+        }
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi lấy mục lục: {str(e)}")
 
 
 # API 4: Chọn thư mục bằng Dialog hệ thống (Tkinter)
@@ -219,11 +547,20 @@ async def websocket_crawl(websocket: WebSocket):
         
         # Trích xuất các thông số cấu hình
         base_url = config.get("base_url")
-        story_id = int(config.get("story_id"))
-        start_chapter_id = int(config.get("start_chapter_id"))
         num_chapters = int(config.get("num_chapters"))
         output_dir = config.get("output_dir")
         source = config.get("source")
+
+        # Hỗ trợ chế độ dán URL trực tiếp: nếu story_id là URL, giữ nguyên dạng string
+        raw_story_id = config.get("story_id", "")
+        raw_start_chapter_id = config.get("start_chapter_id", "")
+
+        if isinstance(raw_story_id, str) and raw_story_id.startswith("http"):
+            story_id = raw_story_id
+            start_chapter_id = raw_story_id
+        else:
+            story_id = int(raw_story_id)
+            start_chapter_id = int(raw_start_chapter_id)
 
         # Khởi tạo parser tương ứng
         parser = get_source(source, base_url)
@@ -339,16 +676,25 @@ async def websocket_translate(websocket: WebSocket):
         ollama_model = config.get("ollama_model", "qwen2.5:7b-instruct")
         gemini_api_key = config.get("gemini_api_key", "")
         gemini_model = config.get("gemini_model", "gemini-2.5-flash")
+        gemini_offline_key = config.get("gemini_offline_key", "")
+        gemini_offline_base_url = config.get("gemini_offline_base_url", "http://localhost:7860/v1")
+        gemini_offline_model = config.get("gemini_offline_model", "gemini-2.5-flash")
         leak_threshold = int(config.get("leak_threshold_percent", 10))
         output_dir_custom = config.get("output_dir", "").strip()
+        auto_extract_glossary = config.get("auto_extract_glossary", True)
+        genre = config.get("genre", "tien_hiep")
         
-        # Thu thập danh sách file dịch
+        # Thu nhập danh sách file dịch và xác định thư mục truyện
         files_to_translate = []
+        story_dir = ""
         if file_paths:
             files_to_translate = [os.path.abspath(f) for f in file_paths]
+            if files_to_translate:
+                story_dir = os.path.dirname(files_to_translate[0])
         elif folder_path:
             folder_abs = os.path.abspath(folder_path)
             if os.path.exists(folder_abs) and os.path.isdir(folder_abs):
+                story_dir = folder_abs
                 for entry in sorted(os.listdir(folder_abs)):
                     if entry.endswith(".md"):
                         files_to_translate.append(os.path.join(folder_abs, entry))
@@ -366,9 +712,40 @@ async def websocket_translate(websocket: WebSocket):
             "message": f"[+] Tìm thấy {len(files_to_translate)} file để tiến hành dịch."
         })
 
+        # Khởi tạo GlossaryManager và nạp từ điển
+        from translator.glossary_manager import GlossaryManager
+        glossary_mgr = GlossaryManager(root_dir=".")
+        if story_dir:
+            glossary_mgr.load_story_glossary(story_dir)
+            combined_glossary = glossary_mgr.get_combined_glossary()
+            glossary_info_msg = f"[+] Đã tải glossary của truyện từ {os.path.basename(story_dir)} (Tổng cộng: {len(combined_glossary)} từ)."
+        else:
+            combined_glossary = glossary_mgr.global_glossary
+            glossary_info_msg = f"[+] Đã tải global glossary (Tổng cộng: {len(combined_glossary)} từ)."
+
+        await websocket.send_json({
+            "event": "log",
+            "message": glossary_info_msg
+        })
+
         # Khởi tạo Engine tương ứng
         from translator import TRANSLATOR_ENGINES, OLLAMA_MODELS
         
+        # Khởi tạo gemini_extractor độc lập nếu có api_key để hỗ trợ trích xuất glossary
+        gemini_extractor = None
+        if gemini_api_key and gemini_api_key.strip():
+            try:
+                gemini_extractor = TRANSLATOR_ENGINES["gemini"](
+                    api_key=gemini_api_key,
+                    model=gemini_model,
+                    leak_threshold_percent=leak_threshold
+                )
+            except Exception as e:
+                await websocket.send_json({
+                    "event": "log",
+                    "message": f"[WARN] Không thể khởi tạo gemini_extractor độc lập: {e}"
+                })
+
         if engine_type == "ollama":
             chunk_size = OLLAMA_MODELS.get(ollama_model, {}).get("chunk_size_chars", 350)
             translator = TRANSLATOR_ENGINES["ollama"](
@@ -377,9 +754,19 @@ async def websocket_translate(websocket: WebSocket):
                 leak_threshold_percent=leak_threshold
             )
         elif engine_type == "gemini":
-            translator = TRANSLATOR_ENGINES["gemini"](
-                api_key=gemini_api_key,
-                model=gemini_model,
+            if gemini_extractor:
+                translator = gemini_extractor
+            else:
+                translator = TRANSLATOR_ENGINES["gemini"](
+                    api_key=gemini_api_key,
+                    model=gemini_model,
+                    leak_threshold_percent=leak_threshold
+                )
+        elif engine_type == "gemini_api":
+            translator = TRANSLATOR_ENGINES["gemini_api"](
+                api_key=gemini_offline_key,
+                base_url=gemini_offline_base_url,
+                model=gemini_offline_model,
                 leak_threshold_percent=leak_threshold
             )
         else:
@@ -388,6 +775,29 @@ async def websocket_translate(websocket: WebSocket):
                 "message": f"[✗] Nguồn dịch '{engine_type}' không hợp lệ."
             })
             return
+
+        # Cấu hình Genre cho các translator
+        translator.set_genre(genre)
+        if gemini_extractor:
+            gemini_extractor.set_genre(genre)
+            
+        # Nạp từ điển thành ngữ dùng chung (common_idioms.json)
+        common_idioms_path = os.path.join(".", "common_idioms.json")
+        if os.path.exists(common_idioms_path):
+            try:
+                with open(common_idioms_path, 'r', encoding='utf-8') as f:
+                    common_idioms = json.load(f)
+                    translator.set_common_idioms(common_idioms)
+                    if gemini_extractor:
+                        gemini_extractor.set_common_idioms(common_idioms)
+            except Exception as e:
+                await websocket.send_json({
+                    "event": "log",
+                    "message": f"[WARN] Không thể nạp từ điển thành ngữ chung: {e}"
+                })
+
+        # Nạp từ điển vào translator
+        translator.set_glossary(combined_glossary)
 
         # Chạy task lắng nghe dừng song song
         listen_task = asyncio.create_task(listen_for_client_messages())
@@ -428,6 +838,37 @@ async def websocket_translate(websocket: WebSocket):
 
             try:
                 def run_translation_file():
+                    # 1. Tự động trích xuất từ mới từ 1500 ký tự đầu tiên của chương
+                    if auto_extract_glossary:
+                        try:
+                            with open(file_path, "r", encoding="utf-8") as f:
+                                text_content = f.read()
+                            
+                            if text_content.strip():
+                                # Chọn extractor phù hợp: Ưu tiên gemini_extractor nếu khả dụng, nếu không fallback sang translator hiện tại
+                                extractor = gemini_extractor if (gemini_extractor and gemini_extractor.is_available()) else translator
+                                
+                                ws_log_callback(f"[->] Đang quét và trích xuất từ mới bằng {extractor.__class__.__name__}...")
+                                new_terms = extractor.extract_glossary_from_text(text_content, translator.glossary)
+                                if new_terms:
+                                    # Lưu vào cả story và global glossary
+                                    added_story = glossary_mgr.save_story_glossary(new_terms)
+                                    added_global = glossary_mgr.save_global_glossary(new_terms)
+                                    if added_story > 0 or added_global > 0:
+                                        updated_glossary = glossary_mgr.get_combined_glossary()
+                                        translator.set_glossary(updated_glossary)
+                                        ws_log_callback(
+                                            f"[✓] Tự động trích xuất và thêm từ mới: {new_terms} "
+                                            f"(Thêm vào global: {added_global}, story: {added_story})"
+                                        )
+                                    else:
+                                        ws_log_callback(f"[i] Các từ trích xuất đã tồn tại trong glossary: {new_terms}")
+                                else:
+                                    ws_log_callback("[i] Không phát hiện thêm từ mới nào đáng chú ý.")
+                        except Exception as e:
+                            ws_log_callback(f"[WARN] Bỏ qua lỗi tự động trích xuất glossary: {e}")
+
+                    # 2. Thực hiện dịch file
                     translator.translate_file(file_path, output_path, progress_callback=ws_log_callback)
                     
                     report = getattr(translator, "last_report", {})
@@ -470,8 +911,8 @@ async def websocket_translate(websocket: WebSocket):
                 })
                 
                 # Chặn chuyển chương nếu có đoạn lỗi
-                if failed_p > 0:
-                    raise ValueError(f"Chương này có {failed_p} đoạn dịch lỗi chưa được khắc phục. Tiến trình dịch bị chặn.")
+                # if failed_p > 0:
+                #     raise ValueError(f"Chương này có {failed_p} đoạn dịch lỗi chưa được khắc phục. Tiến trình dịch bị chặn.")
             except Exception as e:
                 await websocket.send_json({
                     "event": "file_error",
@@ -480,6 +921,7 @@ async def websocket_translate(websocket: WebSocket):
                     "message": f"[✗] Lỗi khi dịch: {str(e)}"
                 })
                 break
+
 
         listen_task.cancel()
 

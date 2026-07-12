@@ -20,6 +20,7 @@ class GeminiTranslator(TranslatorEngine):
         max_chunk_chars: int = 1000,
         leak_threshold_percent: float = 10.0
     ):
+        super().__init__()
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
@@ -74,15 +75,13 @@ class GeminiTranslator(TranslatorEngine):
     def contains_chinese_leak(self, text: str, threshold_ratio: Optional[float] = None, min_chars: int = 5) -> bool:
         """
         Kiểm tra rò rỉ chữ Hán trong bản dịch.
+        (Cơ chế Zero Tolerance: Chỉ cần 1 ký tự Hán là báo lỗi ngay lập tức)
         """
         if not text:
             return False
-        if threshold_ratio is None:
-            threshold_ratio = self.leak_threshold_ratio
             
         chinese_chars = self.chinese_char_pattern.findall(text)
-        count = len(chinese_chars)
-        if count >= min_chars and (count / len(text)) > threshold_ratio:
+        if len(chinese_chars) > 0:
             return True
         return False
 
@@ -100,7 +99,7 @@ class GeminiTranslator(TranslatorEngine):
             return False
         return self.contains_chinese_leak(text)
 
-    def build_system_prompt(self, source_lang: str, is_title: bool = False) -> str:
+    def build_system_prompt(self, source_lang: str, is_title: bool = False, chunk_text: Optional[str] = None) -> str:
         """
         Xây dựng prompt chỉ dẫn dịch thuật động theo ngôn ngữ gốc.
         """
@@ -112,20 +111,144 @@ class GeminiTranslator(TranslatorEngine):
         }
         lang_name = lang_map.get(source_lang, "Chinese")
         
+        genre_instructions = {
+            "tien_hiep": (
+                "You are translating a Wuxia/Cultivation (Tiên Hiệp/Huyền Huyễn) novel. "
+                "Use appropriate historical/ancient Vietnamese wuxia pronouns (such as 'ta' and 'ngươi' for dialogues, "
+                "'hắn', 'nàng' for pronouns, and respect honorifics like 'sư phụ', 'sư huynh'). "
+                "However, adapt pronouns flexibly depending on character age, era, and status differences (e.g. modern transmigrators might use tôi/cậu, while ancient ancestors use ta/ngươi/bản tọa). "
+                "Translate cultivation stages, locations, and magical items using standard Sino-Vietnamese (Hán Việt) naming style."
+            ),
+            "do_thi": (
+                "You are translating a Modern/Urban (Đô Thị/Hiện Đại) novel. "
+                "Use modern Vietnamese pronouns (such as 'tôi', 'cậu', 'anh', 'em', 'hắn') suitable for contemporary dialogue. "
+                "Translate internet slang and modern jargon naturally into smooth Vietnamese."
+            ),
+            "khoa_huyen": (
+                "You are translating a Sci-Fi/Apocalyptic/Game (Khoa Huyễn/Mạt Thế/Vô Hạn Lưu) novel. "
+                "Translate game system messages, stats, attributes, and sci-fi terms accurately and consistently. "
+                "Use natural, engaging Vietnamese appropriate for action and survival stories."
+            ),
+            "generic": (
+                "Translate the text into natural, smooth, and high-quality Vietnamese suitable for a web novel."
+            )
+        }
+        genre_text = genre_instructions.get(getattr(self, "genre", "tien_hiep"), genre_instructions["tien_hiep"])
+
         system_instruction = (
             f"You are an expert translator specializing in translating {lang_name} web novels to Vietnamese.\n"
             f"Translate the user's {lang_name} text to Vietnamese.\n"
+            f"Context: {genre_text}\n\n"
             "Requirements:\n"
-            "1. Translate into natural, smooth, and high-quality Vietnamese (novel style).\n"
+            "1. Translate into natural, smooth, and high-quality Vietnamese.\n"
             "2. Keep the original Markdown formatting (headings, blank lines) exactly as-is.\n"
-            f"3. Translate names consistently (e.g. for Chinese names like 江思 to Giang Tư, 冰糖 to Băng Đường).\n"
-            f"4. DO NOT leak or write any original non-Vietnamese characters in your output. Every sentence must be translated into Vietnamese.\n"
+            "3. Translate names consistently and accurately according to standard Sino-Vietnamese (Hán Việt) transliteration or the provided Glossary.\n"
+            "4. DO NOT leak or write any original non-Vietnamese characters in your output. Every sentence must be translated into Vietnamese.\n"
             "5. Output ONLY the translated Vietnamese text. Do not add comments, notes, or explanations.\n"
-            f"6. If the input contains short questions, dialogues, or specific terms (e.g. '“对抗？”'), translate them fully into Vietnamese (e.g. '“Đối kháng?”') and do not write or copy any original {lang_name} characters in your output."
+            "6. If the input contains short questions, dialogues, or specific terms, translate them fully into Vietnamese and do not write or copy any original characters in your output.\n"
+            "7. Translate Pinyin or untranslated Chinese terms into their Sino-Vietnamese (Hán Việt) equivalent or clear Vietnamese meaning (do not output raw Pinyin like 'Hu Ling Zhi').\n"
+            "8. Translate common idioms and metaphors into their natural Vietnamese equivalent (e.g. translate '扮猪吃老虎' to 'giả heo ăn hổ', '名义上的' to 'trên danh nghĩa', and '钉子户' to 'kẻ bám trụ lì lợm').\n"
+            "9. Avoid modern/slang terms in historical settings, and avoid overly ancient terms in modern settings."
         )
+
+        active_glossary = {}
+        if chunk_text:
+            # 1. Tìm các từ trong common_idioms trước (độ ưu tiên thấp)
+            matching_idioms = {}
+            if hasattr(self, "common_idioms") and self.common_idioms:
+                for k, v in self.common_idioms.items():
+                    if k in chunk_text:
+                        matching_idioms[k] = v
+                        
+            # 2. Tìm các từ trong glossary (độ ưu tiên cao, đè lên idioms nếu trùng key)
+            matching_glossary = {}
+            if self.glossary:
+                for k, v in self.glossary.items():
+                    if k in chunk_text:
+                        matching_glossary[k] = v
+            
+            # Gộp lại: glossary đè lên idioms
+            merged_candidates = matching_idioms.copy()
+            merged_candidates.update(matching_glossary)
+            
+            # Capping: giới hạn tối đa 20 từ khóa
+            # Ưu tiên đưa các từ thuộc matching_glossary vào trước, sau đó mới điền thêm bằng matching_idioms
+            selected_keys = list(matching_glossary.keys())[:20]
+            if len(selected_keys) < 20:
+                remaining_space = 20 - len(selected_keys)
+                for k in matching_idioms.keys():
+                    if k not in selected_keys:
+                        selected_keys.append(k)
+                        if len(selected_keys) >= 20:
+                            break
+                            
+            for k in selected_keys:
+                active_glossary[k] = merged_candidates[k]
+        else:
+            # Nếu không có chunk_text, lấy tối đa 20 từ từ glossary
+            if self.glossary:
+                for k, v in list(self.glossary.items())[:20]:
+                    active_glossary[k] = v
+
+        if active_glossary:
+            glossary_text = "\n".join([f"- {k} -> {v}" for k, v in active_glossary.items()])
+            system_instruction += (
+                f"\n\nCRITICAL REQUIREMENT: You MUST strictly use the following Glossary for specific terms and names. "
+                f"Do not invent or use other translations for these terms:\n{glossary_text}\n"
+            )
+
         if is_title:
             system_instruction += "\nNote: This is the chapter title. Keep it short and preserve Markdown heading prefix."
         return system_instruction
+
+    def extract_glossary_from_text(self, text: str, current_glossary: dict) -> dict:
+        """
+        Trích xuất các danh từ riêng MỚI từ văn bản tiếng Trung bằng Gemini API.
+        """
+        prompt = (
+            "Dưới đây là một đoạn truyện chữ (tiên hiệp/đô thị/mạng) tiếng Trung.\n"
+            "Nhiệm vụ của bạn là phân tích và lập bảng thuật ngữ dịch thuật (glossary) chuẩn xác nhất để làm dữ liệu dịch sang tiếng Việt.\n"
+            "Yêu cầu trích xuất cụ thể:\n"
+            "1. Tên nhân vật (Ví dụ: 顾安 -> Cố An, 张春秋 -> Trương Xuân Thu, 姬少玉 -> Cơ Thiếu Ngọc / Cơ Tiêu Ngọc). Đảm bảo xưng hô phù hợp với ngữ cảnh (Ví dụ: 顾安兄弟 -> Huynh đệ Cố An, KHÔNG dịch thành Cố An tỷ đệ).\n"
+            "2. Tên địa danh, phòng đường, thung lũng (Ví dụ: 药谷 -> Dược Cốc, 丹药堂 -> Đan Dược Đường, 沧州 -> Thương Châu, 太玄门 -> Thái Huyền Môn). Tránh dịch sang nghĩa thuần Việt sai lệch (Ví dụ: KHÔNG dịch 药谷 thành thung lũng thuốc / dược giá / thuốc thung).\n"
+            "3. Thuật ngữ tu tiên, cảnh giới, công pháp, thảo dược (Ví dụ: 筑基 -> Trúc Cơ, 修为 -> Tu vi, 不入流 -> Bất nhập lưu, 一阶 -> Nhất giai, 夺取寿命 -> Đoạt lấy tuổi thọ, 春木功 -> Xuân Mộc Công, 赤灵花 -> Xích Linh Hoa). Tránh dịch sai lệch bản chất tu tiên (Ví dụ: KHÔNG dịch 修为 thành thiên tài, KHÔNG dịch 不入流 thành không đạt tiêu chuẩn, KHÔNG dịch 赤灵花 thành Hồng Linh Hoa).\n"
+            "4. Từ lóng mạng và thuật ngữ cốt lõi (Ví dụ: 金手指 -> Ngón tay vàng / Hệ thống hack, KHÔNG dịch thành kim chỉ tay).\n"
+        )
+        if current_glossary:
+            existing_keys = ", ".join(current_glossary.keys())
+            prompt += f"\nBỎ QUA và KHÔNG trích xuất lại các từ đã có trong danh sách từ điển hiện tại sau: {existing_keys}.\n"
+        
+        prompt += (
+            "\nTRẢ VỀ DUY NHẤT một chuỗi JSON hợp lệ (không chứa markdown block ```json, chỉ có ngoặc nhọn). "
+            "Định dạng JSON: {\"Chữ Hán\": \"Bản dịch Hán Việt hoặc Nghĩa chuẩn tương ứng\"}.\n"
+            "Nếu không có từ mới nào đáng chú ý, hãy trả về JSON rỗng: {}\n\n"
+            "Đoạn truyện cần trích xuất:\n"
+            f"{text[:3000]}"
+        )
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "systemInstruction": {"parts": [{"text": "You are a data extractor. Output ONLY raw JSON."}]},
+            "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
+        }
+        
+        try:
+            res_text = self._execute_api_call(url, payload)
+            # Clean up potential markdown
+            res_text = res_text.strip()
+            if res_text.startswith("```json"): res_text = res_text[7:]
+            if res_text.startswith("```"): res_text = res_text[3:]
+            if res_text.endswith("```"): res_text = res_text[:-3]
+            res_text = res_text.strip()
+            
+            data = json.loads(res_text)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            print(f"[Warning] Lỗi khi extract glossary (Gemini): {e}")
+            
+        return {}
 
     def _execute_api_call(self, url: str, payload: dict) -> str:
         req = urllib.request.Request(
@@ -160,7 +283,7 @@ class GeminiTranslator(TranslatorEngine):
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         
-        system_instruction = self.build_system_prompt(source_lang, is_title)
+        system_instruction = self.build_system_prompt(source_lang, is_title, text)
 
         max_tokens = override_max_tokens if override_max_tokens is not None else 4096
 
@@ -409,7 +532,15 @@ class GeminiTranslator(TranslatorEngine):
             translated_chunk = translated_chunks[i - 1]
             orig_paras = [p.strip() for p in chunk.split("\n\n") if p.strip()]
             trans_paras = [p.strip() for p in translated_chunk.split("\n\n") if p.strip()]
-            
+
+            if len(orig_paras) != len(trans_paras):
+                # Model chuyên dịch (MT) thường trả về mỗi đoạn trên MỘT dòng,
+                # làm mất dòng trống giữa các đoạn. Thử căn chỉnh lại theo dòng đơn
+                # trước khi bỏ cuộc: nếu số DÒNG khớp số đoạn gốc thì ghép 1-1.
+                trans_lines = [l.strip() for l in translated_chunk.split("\n") if l.strip()]
+                if len(trans_lines) == len(orig_paras):
+                    trans_paras = trans_lines
+
             if len(orig_paras) == len(trans_paras):
                 for op, tp in zip(orig_paras, trans_paras):
                     paragraph_mappings.append((op, tp, i))
@@ -525,7 +656,8 @@ class GeminiTranslator(TranslatorEngine):
                     "chunk_index": chunk_index,
                     "char_position_start": para_start_pos,
                     "reason": p_reason if p_reason else "leak sau cả 2 lớp",
-                    "original_text_preview": orig_p[:60]
+                    "original_text_preview": orig_p[:60],
+                    "original_text": orig_p
                 })
 
             if p_status == "direct_success":
@@ -572,6 +704,9 @@ class GeminiTranslator(TranslatorEngine):
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(translated_text)
 
+        # Cập nhật vị trí chính xác (ký tự + số dòng) của các đoạn lỗi trong file output
+        self.refresh_failed_positions(translated_text)
+
         # Write .translation_report.json alongside the output file
         import datetime
         report = {
@@ -588,5 +723,6 @@ class GeminiTranslator(TranslatorEngine):
         
         input_base = os.path.splitext(os.path.basename(input_path))[0]
         report_path = os.path.join(os.path.dirname(output_path), f"{input_base}.translation_report.json")
+        self.last_report_path = report_path
         with open(report_path, "w", encoding="utf-8") as rf:
             json.dump(report, rf, ensure_ascii=False, indent=2)

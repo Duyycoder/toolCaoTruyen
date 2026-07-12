@@ -7,10 +7,12 @@ Công cụ chạy trên máy cá nhân giúp tự động tải truyện chữ t
 ## 🌟 Tính năng nổi bật
 * **Bypass Cloudflare tự động:** Sử dụng Selenium để vượt qua lớp bảo vệ Cloudflare Managed Challenge ("Just a moment...") bằng trình duyệt ẩn danh thật.
 * **Đầu ra sạch sẽ:** Tự động loại bỏ toàn bộ quảng cáo, text rác, liên kết website ẩn trong nội dung chương truyện.
-* **Dịch thuật AI Local:** Tích hợp Ollama dịch chương trực tiếp từ tiếng Trung sang tiếng Việt mượt mà, văn phong tự nhiên.
+* **Quản lý & Tự động trích xuất Thuật ngữ (Glossary Manager):** Hỗ trợ từ điển dùng chung (`global_glossary.json`) và từ điển riêng theo bộ truyện (`glossary.json`). Tự động dùng AI (Gemini hoặc Ollama) phân tích chương để trích xuất tên nhân vật, môn phái, địa danh,... rồi tự động cập nhật vào file từ điển, giúp bản dịch đồng nhất.
+* **Dịch thuật AI Local & Cloud:** Tích hợp Ollama (chạy Offline local với Qwen2.5/Qwen3) và Gemini API (dịch trực tuyến tốc độ cao), tự động tối ưu hóa prompt few-shot và tham số dịch.
+* **Dịch tên file thông minh & An toàn:** Chỉ dịch tên file chứa chữ Trung Quốc để tránh lỗi ảo hóa, tự động làm sạch và giới hạn độ dài tên file dưới 80 ký tự để tránh lỗi đường dẫn quá dài (Path Too Long) trên Windows.
 * **Tự động lưu tiến độ:** Nếu đang tải mà bị mất mạng hoặc tắt tool, lần sau chạy lại tool sẽ tự động tiếp tục tải từ chương bị gián đoạn, tránh tải trùng lặp.
 * **Giao diện đa dạng:**
-  * **Web UI (FastAPI & WebSocket):** Giao diện Web hiện đại, chọn thư mục lưu qua Windows Dialog, theo dõi tiến độ thời gian thực (real-time) và hỗ trợ nút Dừng giữa chừng.
+  * **Web UI (FastAPI & WebSocket):** Giao diện Web hiện đại, chọn thư mục lưu qua Windows Dialog trực quan, theo dõi tiến độ thời gian thực (real-time) và hỗ trợ nút Dừng giữa chừng.
   * **CLI Terminal:** Thao tác nhanh gọn bằng dòng lệnh truyền thống.
 * **Cài đặt 1-Click:** File cài đặt tự động `setup.bat` làm mọi thứ từ thư viện Python đến tải mô hình AI.
 
@@ -68,10 +70,15 @@ Dịch các file `.md` tiếng Trung sang tiếng Việt mượt mà với nhi�
 2. **Engine dịch thuật:**
    - **Ollama (Chạy Offline Local):** Dùng model AI chạy cục bộ không cần internet. Bạn có thể chọn giữa:
      - *Qwen2.5 7B (Đã kiểm thử):* Model khuyên dùng, hoạt động mượt mà với card đồ họa 6-8GB VRAM. Đã được đo đạc tối ưu với chunk size 350 ký tự (tỉ lệ rò rỉ chữ Trung trung bình chỉ ~0.40%).
-     - *Qwen3 8B (Mới, chưa tối ưu riêng):* Model thử nghiệm, sử dụng tạm cấu hình chunk size giống bản 7B. Bạn cần chạy lệnh `ollama pull qwen3:8b` thủ công để tải model trước khi dùng.
+     - *Qwen3 8B (Đã tối ưu hóa giảm leak):* Model mới, được tối ưu chunk size lên 400 ký tự, temperature giảm còn 0.05 kết hợp cơ chế Few-shot Prompt mẫu giúp giảm thiểu tối đa rò rỉ chữ Trung.
    - **Gemini API:** Dịch trực tuyến bằng Gemini API của Google (cần điền **Gemini API Key** và kết nối internet). Rất nhanh và dịch trơn tru bằng model `gemini-2.5-flash`.
-3. **Cơ chế 2 Tầng chống rò rỉ chữ Trung (Anti-leakage):**
-   - *Tầng 1 (Per-chunk Retry):* Tách văn bản thành các đoạn nhỏ (350 ký tự cho Ollama), nếu kết quả dịch chunk vượt quá ngưỡng rò rỉ (mặc định 10%), model tự hạ nhiệt độ và dịch lại.
+   - **Gemini API (Offline/Local):** Dịch miễn phí không giới hạn bằng cách giả lập giao diện web của Google Gemini thông qua cookies (`__Secure-1PSID` và `__Secure-1PSIDTS`). Server trung gian chạy local ở cổng `7860` sẽ tự động kích hoạt/đóng cùng tool chính.
+3. **Quản lý từ điển & Tự động trích xuất (Glossary):**
+   - *Quản lý linh hoạt:* Nạp đồng thời `global_glossary.json` và `glossary.json` của từng truyện (file nằm cùng thư mục truyện).
+   - *Lọc từ khóa động (Active Glossary):* Chỉ gửi các từ xuất hiện trong đoạn cần dịch vào Prompt, giúp tối ưu context window và độ chính xác của LLM.
+   - *Tự động quét từ mới:* Khi bật tùy chọn, hệ thống tự động quét 1500 ký tự đầu của mỗi chương bằng Gemini API để trích xuất tên nhân vật, địa danh, thuật ngữ tu tiên,... rồi tự động cập nhật vào các file từ điển.
+4. **Cơ chế 2 Tầng chống rò rỉ chữ Trung (Anti-leakage):**
+   - *Tầng 1 (Per-chunk Retry):* Tách văn bản thành các đoạn nhỏ (350-400 ký tự), nếu kết quả dịch chunk vượt quá ngưỡng rò rỉ (mặc định 10%), model tự hạ nhiệt độ và dịch lại.
    - *Tầng 2 (Paragraph Repair):* Ghép lại toàn bộ file và quét từng đoạn văn nhỏ. Vá cục bộ những câu bị rò rỉ chữ Hán ở ranh giới chunk.
    - *Đánh dấu lỗi thủ công:* Nếu đoạn văn vẫn dịch lỗi sau cả 2 tầng, hệ thống sẽ đánh dấu rõ ràng dạng `> ⚠️ [Đoạn này AI dịch không thành công, giữ nguyên bản gốc]\n\n[Nội dung gốc]` thay vì để trôi qua âm thầm. Đây là **thiết kế có chủ đích** của hệ thống vì các model 6-8B local không đảm bảo dịch hoàn hảo 100% văn tự sự novel dài.
 
@@ -91,4 +98,21 @@ Dịch các file `.md` tiếng Trung sang tiếng Việt mượt mà với nhi�
 
 ### 3. Cách lấy Gemini API Key miễn phí?
 * Bạn có thể truy cập [Google AI Studio](https://aistudio.google.com/), đăng nhập bằng tài khoản Google cá nhân và nhấn "Create API Key" để nhận Key miễn phí dùng cho dịch thuật trực tuyến tốc độ cao.
+
+### 4. Cách thiết lập cookies cho Gemini API (Offline/Local)?
+1. Truy cập trang web [Google Gemini](https://gemini.google.com/) trên trình duyệt của bạn và đăng nhập tài khoản Google.
+2. Nhấn phím `F12` (hoặc chuột phải chọn `Inspect` / `Kiểm tra`) để mở công cụ nhà phát triển của trình duyệt.
+3. Chuyển sang tab **Application** (đối với Chrome/Edge) hoặc **Storage** (đối với Firefox) -> Chọn mục **Cookies** ở danh sách bên trái -> Chọn trang `https://gemini.google.com`.
+4. Tìm và sao chép giá trị của hai cookies sau:
+   - `__Secure-1PSID`
+   - `__Secure-1PSIDTS`
+5. Mở file `Gemini-API/cookies.json` trong thư mục tool (file này được tự động tạo sau khi chạy `setup.bat` hoặc khởi động tool) và điền hai giá trị trên vào:
+   ```json
+   {
+     "__Secure-1PSID": "giá_trị___Secure-1PSID_của_bạn",
+     "__Secure-1PSIDTS": "giá_trị___Secure-1PSIDTS_của_bạn"
+   }
+   ```
+6. Tải lại trang Web UI và chọn Engine dịch là **Gemini API (Offline/Local)** để sử dụng dịch thuật hoàn toàn miễn phí.
+
 

@@ -3,6 +3,14 @@ chcp 437 >nul 2>&1
 title Khoi chay Tool Cao va Dich Truyen Chu
 cls
 
+rem -- Thiet lap thu muc Cache cuc bo trong du an --
+set "PROJ_DIR=%~dp0"
+if "%PROJ_DIR:~-1%"=="\" set "PROJ_DIR=%PROJ_DIR:~0,-1%"
+set "HF_HOME=%PROJ_DIR%\scratch\.cache\huggingface"
+set "TORCH_HOME=%PROJ_DIR%\scratch\.cache\torch"
+set "XDG_CACHE_HOME=%PROJ_DIR%\scratch\.cache\xdg"
+
+
 echo ============================================================
 echo    Tool Cao va Dich Truyen Chu - Web UI
 echo ============================================================

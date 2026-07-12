@@ -3,6 +3,7 @@ import sys
 import time
 import random
 import re
+import json
 from typing import Optional, Tuple, Callable, Any
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -131,24 +132,39 @@ def save_to_markdown(
     Returns:
         Đường dẫn đầy đủ tới file .md đã lưu.
     """
-    safe_story_name = sanitize_filename(story_name)
     safe_chapter_name = sanitize_filename(chapter_name)
 
-    # Prefix số thứ tự để sắp xếp đúng (0001_, 0002_, ...)
-    filename = f"{chapter_index:04d}_{safe_chapter_name}.md"
+    # Tên file = Chương + số chương (đệm 0 để tránh lỗi sắp xếp) + tên chương
+    filename = f"Chương {chapter_index:04d} - {safe_chapter_name}.md"
 
-    # Tạo thư mục: {output_dir}/{tên_truyện}/
-    story_dir = os.path.join(output_dir, safe_story_name)
-    os.makedirs(story_dir, exist_ok=True)
+    # Trực tiếp đặt file vào output_dir (chính là thư mục raw), không tạo thư mục con mang tên truyện
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Format Markdown: heading + nội dung
-    md_content = f"# {chapter_name}\n\n{content}\n"
+    # Format Markdown: chỉ chứa nội dung, không chứa tiêu đề chương (tránh lặp/thừa)
+    md_content = f"{content}\n"
 
-    filepath = os.path.join(story_dir, filename)
+    filepath = os.path.join(output_dir, filename)
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(md_content)
 
     return filepath
+
+
+def find_last_chapter_index(output_dir: str) -> int:
+    """Tìm số thứ tự chương lớn nhất trong các file .md đã lưu (kể cả bản dịch [VI])
+    để tiếp tục đánh số khi không có file trạng thái hợp lệ.
+    """
+    max_index = 0
+    try:
+        for f in os.listdir(output_dir):
+            if not f.endswith(".md"):
+                continue
+            match = re.match(r"Chương\s+(\d+)\s+-", f)
+            if match:
+                max_index = max(max_index, int(match.group(1)))
+    except OSError:
+        pass
+    return max_index
 
 
 def default_progress_callback(event_data: dict) -> None:
@@ -219,6 +235,12 @@ def default_progress_callback(event_data: dict) -> None:
         print(f"{Color.DIM}    ⏳ Chờ {delay:.1f}s...{Color.RESET}")
     elif event == "stopped":
         print(f"\n{Color.YELLOW}[!] Quá trình tải đã bị người dùng dừng lại.{Color.RESET}\n")
+    elif event == "continue":
+        print(f"{Color.CYAN}[→] {event_data.get('message', '')}{Color.RESET}")
+    elif event == "warn":
+        print(f"{Color.YELLOW}{event_data.get('message', '')}{Color.RESET}")
+    elif event == "error":
+        print(f"{Color.RED}{event_data.get('message', '')}{Color.RESET}")
     elif event == "complete":
         total_attempted = event_data.get("total_attempted")
         successful_downloads = event_data.get("successful_downloads")
@@ -236,8 +258,7 @@ def default_progress_callback(event_data: dict) -> None:
             f"{Color.GREEN}{successful_downloads}/{num_chapters}{Color.RESET}"
         )
         if story_name:
-            safe_name = sanitize_filename(story_name)
-            full_path = os.path.abspath(os.path.join(output_dir, safe_name))
+            full_path = os.path.abspath(output_dir)
             print(f"   Thư mục lưu trữ     : {Color.GREEN}{full_path}{Color.RESET}")
         if consecutive_failures >= max_failures:
             print(
@@ -252,14 +273,25 @@ def default_progress_callback(event_data: dict) -> None:
         print(f"{Color.CYAN}{'═' * 60}{Color.RESET}\n")
 
 
-def extract_chapter_id_from_url(url: str, fallback_id: int) -> int:
-    """Trích xuất ID chương từ URL chương truyện phục vụ cho callback hiển thị.
+def extract_chapter_id_from_url(url: str, fallback_id: Any) -> Any:
+    """Trích xuất ID chương hoặc phần định danh chương từ URL phục vụ cho callback hiển thị.
     KHÔNG được dùng trong bất kỳ điều kiện if/while nào quyết định luồng chạy.
     """
     try:
+        # Thử với 69shuba
         match = re.search(r"/txt/\d+/(\d+)", url)
         if match:
             return int(match.group(1))
+        
+        # Thử với metruyenchuvn: ví dụ: /nguoi-tren-van-nguoi/chuong-1-AoCo2t_YhnIh
+        match2 = re.search(r"/(chuong-\d+-[A-Za-z0-9_]+|chuong-\d+)", url)
+        if match2:
+            return match2.group(1)
+            
+        # Thử tìm phần cuối cùng của URL
+        parts = url.rstrip("/").split("/")
+        if parts:
+            return parts[-1]
     except Exception:
         pass
     return fallback_id
@@ -268,12 +300,13 @@ def extract_chapter_id_from_url(url: str, fallback_id: int) -> int:
 def download_chapters(
     base_url: str,
     story_id: int,
-    start_chapter_id: int,
+    start_chapter_id: Any,
     num_chapters: int,
     output_dir: str,
     parser: BaseSourceParser,
     progress_callback: Optional[Callable[[dict], None]] = None,
-    is_stopped: Optional[Callable[[], bool]] = None
+    is_stopped: Optional[Callable[[], bool]] = None,
+    continue_download: bool = False
 ) -> None:
     """Vòng lặp chính: tải từng chương, parse, và lưu file.
     Điều hướng theo liên kết thật (next-chapter url) thay vì tự tăng ID + 1.
@@ -298,19 +331,139 @@ def download_chapters(
     total_attempted: int = 0
     reached_end: bool = False
 
-    # Khởi tạo URL chương đầu tiên từ ID người dùng nhập
-    current_url: str = parser.build_chapter_url(story_id, start_chapter_id)
-    
-    # Tập hợp các URL đã tải trong phiên này để chống lặp vô hạn
-    visited_urls = set()
+    # Khởi tạo URL chương đầu tiên từ ID người dùng nhập hoặc dùng trực tiếp nếu start_chapter_id là URL
+    if isinstance(start_chapter_id, str) and (start_chapter_id.startswith("http://") or start_chapter_id.startswith("https://")):
+        current_url: str = start_chapter_id
+    elif isinstance(story_id, str) and (story_id.startswith("http://") or story_id.startswith("https://")):
+        current_url: str = story_id
+    else:
+        current_url = parser.build_chapter_url(story_id, start_chapter_id)
+    story_name = None
+    successful_downloads: int = 0
+    current_chapter_number: int = 0
 
-    # --- Khởi tạo browser ---
+    state_file = os.path.join(output_dir, ".crawler_state.json")
+    # Kế hoạch tra mục lục (cần trình duyệt nên sẽ thực hiện sau khi khởi tạo Chrome)
+    resume_plan: Optional[dict] = None
+    if continue_download:
+        state = None
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+            except Exception:
+                state = None
+
+        state_index = state.get("last_chapter_index", 0) if state else 0
+        state_next_url = state.get("next_url") if state else None
+        disk_index = find_last_chapter_index(output_dir)
+
+        if state_next_url and state_index >= disk_index:
+            # Link lưu sẵn còn mới -> dùng luôn, BỎ QUA điểm bắt đầu người dùng nhập
+            current_url = state_next_url
+            current_chapter_number = state_index
+            progress_callback({
+                "event": "continue",
+                "message": f"Tiếp tục tải từ chương {current_chapter_number + 1} theo link đã lưu ({current_url})."
+            })
+        elif disk_index > 0:
+            # Không có link lưu sẵn, hoặc link lưu sẵn CŨ hơn số chương đã có trên đĩa
+            # (ví dụ do một lần tải lại từ đầu đã ghi đè trạng thái).
+            # -> Tra mục lục truyện để tìm link chương disk_index + 1.
+            resume_plan = {
+                "target_index": disk_index,
+                "fallback_url": state_next_url,
+                "fallback_index": state_index
+            }
+        else:
+            # Thư mục trống và không có trạng thái: không có gì để tiếp tục
+            if state and state.get("reached_end"):
+                progress_callback({
+                    "event": "warn",
+                    "message": "[!] Lần tải trước đã đến chương mới nhất của truyện."
+                })
+            else:
+                progress_callback({
+                    "event": "warn",
+                    "message": "[!] Đã bật 'Tải tiếp' nhưng chưa có chương nào trên đĩa và không có trạng thái lưu sẵn. Sẽ tải từ điểm bắt đầu."
+                })
+            
+    visited_urls = set()
+    consecutive_failures = 0
+    total_attempted = 0
+    
+    # --- Khởi tạo Chrome ---
     driver = create_browser()
 
     progress_callback({"event": "start", "message": "Bắt đầu tải truyện..."})
 
+    abort = False
     try:
-        while successful_downloads < num_chapters:
+        # --- Tra mục lục để xác định link chương tiếp theo (nếu cần) ---
+        if resume_plan is not None:
+            target_index = resume_plan["target_index"]
+            resolved = False
+            progress_callback({
+                "event": "continue",
+                "message": f"Đang tra mục lục truyện để tìm link chương {target_index + 1}..."
+            })
+            try:
+                book_url = parser.get_book_url(story_id, resume_plan.get("fallback_url"))
+                if book_url:
+                    catalog = parser.get_catalog(driver, book_url)
+                    target = next((c for c in catalog if c.index == target_index + 1), None)
+                    if target:
+                        current_url = target.chapter_url
+                        current_chapter_number = target_index
+                        resolved = True
+                        progress_callback({
+                            "event": "continue",
+                            "message": f"Tiếp tục tải từ chương {target_index + 1}: {target.title} ({current_url})"
+                        })
+                    elif catalog:
+                        # Mục lục hợp lệ nhưng không có chương kế tiếp -> đã đến chương mới nhất
+                        reached_end = True
+                        abort = True
+                        progress_callback({
+                            "event": "warn",
+                            "message": f"[!] Mục lục hiện có {len(catalog)} chương, chưa có chương {target_index + 1}. Truyện chưa ra chương mới."
+                        })
+            except NotImplementedError:
+                pass
+            except Exception as ex:
+                progress_callback({
+                    "event": "warn",
+                    "message": f"[!] Lỗi khi tra mục lục truyện: {ex}"
+                })
+
+            if not resolved and not abort:
+                if resume_plan.get("fallback_url"):
+                    current_url = resume_plan["fallback_url"]
+                    current_chapter_number = resume_plan.get("fallback_index", 0)
+                    progress_callback({
+                        "event": "warn",
+                        "message": f"[!] Không tra được mục lục; dùng link đã lưu (từ chương {current_chapter_number + 1}). Một số chương có thể bị tải lại nhưng sẽ không bị dịch lại."
+                    })
+                elif str(start_chapter_id).strip().lower() not in ("", "auto"):
+                    current_chapter_number = target_index
+                    progress_callback({
+                        "event": "continue",
+                        "message": f"Không tra được mục lục; dùng điểm bắt đầu đã nhập ({start_chapter_id}) và tiếp tục đánh số từ chương {target_index + 1}."
+                    })
+                else:
+                    # Không còn cách nào xác định đúng chương kế tiếp:
+                    # DỪNG thay vì âm thầm tải lại từ chương 1
+                    abort = True
+                    progress_callback({
+                        "event": "error",
+                        "message": (
+                            f"[✗] Không thể xác định link chương {target_index + 1} để tải tiếp "
+                            f"(không có link lưu sẵn và không tra được mục lục). "
+                            f"Hãy nhập URL chương {target_index + 1} vào ô 'Chương bắt đầu' rồi chạy lại."
+                        )
+                    })
+
+        while not abort and successful_downloads < num_chapters:
             # --- Kiểm tra dừng giữa các lần lặp ---
             if is_stopped and is_stopped():
                 progress_callback({
@@ -415,9 +568,10 @@ def download_chapters(
                 })
 
             # --- Lưu file ---
+            current_chapter_number += 1
             filepath = save_to_markdown(
                 output_dir, story_name, chapter_name,
-                content, successful_downloads
+                content, current_chapter_number
             )
 
             progress_callback({
@@ -431,6 +585,18 @@ def download_chapters(
 
             # --- Xác định URL chương tiếp theo từ DOM thực ---
             next_url = parser.get_next_chapter_url(driver)
+
+            # --- Lưu trạng thái (serialize trước khi mở file để không để lại file rỗng khi lỗi) ---
+            try:
+                state_payload = json.dumps({
+                    "last_chapter_index": current_chapter_number,
+                    "next_url": next_url,
+                    "reached_end": next_url is None
+                }, ensure_ascii=False)
+                with open(state_file, "w", encoding="utf-8") as f:
+                    f.write(state_payload)
+            except Exception:
+                pass
 
             if next_url is None:
                 # Đã đến chương cuối cùng của truyện

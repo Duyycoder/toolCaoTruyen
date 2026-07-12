@@ -17,14 +17,29 @@ class OllamaTranslator(TranslatorEngine):
         max_chunk_chars: int = 350,  # Benchmark optimal size
         leak_threshold_percent: float = 10.0
     ):
+        super().__init__()
         self.model = model
         self.api_url = api_url
         self.num_ctx = num_ctx
-        self.temperature = temperature
-        self.max_chunk_chars = max_chunk_chars
+        
+        # Tự động nạp cấu hình bổ sung từ registry nếu có
+        from .registry import OLLAMA_MODELS
+        model_config = OLLAMA_MODELS.get(model, {})
+        
+        self.temperature = model_config.get("temperature", temperature)
+        self.max_chunk_chars = model_config.get("chunk_size_chars", max_chunk_chars)
+        self.few_shot = model_config.get("few_shot", False)
+        self.num_ctx = model_config.get("num_ctx", num_ctx)
+        # "chat" = system prompt + yêu cầu chi tiết (model chat tổng quát);
+        # "hunyuan_mt"/"translategemma" = template cố định của model chuyên dịch
+        self.prompt_style = model_config.get("prompt_style", "chat")
+        self.top_p = model_config.get("top_p", 0.9)
+        self.top_k = model_config.get("top_k")
+        self.repeat_penalty = model_config.get("repeat_penalty")
+        
         self.leak_threshold_ratio = leak_threshold_percent / 100.0
         self.chinese_char_pattern = re.compile(r"[\u4e00-\u9fff]")
-        self.num_predict = max(2048, max_chunk_chars * 15)
+        self.num_predict = max(2048, self.max_chunk_chars * 15)
         self.last_done_reason = None
 
     def is_available(self) -> bool:
@@ -88,15 +103,13 @@ class OllamaTranslator(TranslatorEngine):
     def contains_chinese_leak(self, text: str, threshold_ratio: Optional[float] = None, min_chars: int = 5) -> bool:
         """
         Kiểm tra xem bản dịch có bị rò rỉ ký tự tiếng Trung hay không.
+        (Cơ chế Zero Tolerance: Chỉ cần 1 ký tự Hán là báo lỗi ngay lập tức)
         """
         if not text:
             return False
-        if threshold_ratio is None:
-            threshold_ratio = self.leak_threshold_ratio
             
         chinese_chars = self.chinese_char_pattern.findall(text)
-        count = len(chinese_chars)
-        if count >= min_chars and (count / len(text)) > threshold_ratio:
+        if len(chinese_chars) > 0:
             return True
         return False
 
@@ -114,7 +127,82 @@ class OllamaTranslator(TranslatorEngine):
             return False
         return self.contains_chinese_leak(text)
 
-    def build_system_prompt(self, source_lang: str, is_title: bool = False) -> str:
+    def _select_active_glossary(self, chunk_text: Optional[str]) -> dict:
+        """Chọn tối đa 20 thuật ngữ (glossary ưu tiên hơn idioms) khớp với chunk hiện tại."""
+        active_glossary = {}
+        if chunk_text:
+            # 1. Tìm các từ trong common_idioms trước (độ ưu tiên thấp)
+            matching_idioms = {}
+            if hasattr(self, "common_idioms") and self.common_idioms:
+                for k, v in self.common_idioms.items():
+                    if k in chunk_text:
+                        matching_idioms[k] = v
+
+            # 2. Tìm các từ trong glossary (độ ưu tiên cao, đè lên idioms nếu trùng key)
+            matching_glossary = {}
+            if self.glossary:
+                for k, v in self.glossary.items():
+                    if k in chunk_text:
+                        matching_glossary[k] = v
+
+            # Gộp lại: glossary đè lên idioms
+            merged_candidates = matching_idioms.copy()
+            merged_candidates.update(matching_glossary)
+
+            # Capping: giới hạn tối đa 20 từ khóa, ưu tiên glossary trước idioms
+            selected_keys = list(matching_glossary.keys())[:20]
+            if len(selected_keys) < 20:
+                for k in matching_idioms.keys():
+                    if k not in selected_keys:
+                        selected_keys.append(k)
+                        if len(selected_keys) >= 20:
+                            break
+
+            for k in selected_keys:
+                active_glossary[k] = merged_candidates[k]
+        else:
+            # Nếu không có chunk_text, lấy tối đa 20 từ từ glossary
+            if self.glossary:
+                for k, v in list(self.glossary.items())[:20]:
+                    active_glossary[k] = v
+        return active_glossary
+
+    def _build_mt_prompt(self, text: str, source_lang: str = "zh") -> str:
+        """Xây prompt theo template chính thức của model CHUYÊN DỊCH (MT).
+
+        - hunyuan_mt (HY-MT2): template tiếng Trung + chèn thuật ngữ dạng
+          "参考下面的翻译：X 翻译成 Y" (terminology intervention chính thức).
+        - translategemma: template "You are a professional ... translator" của Google.
+        """
+        glossary_terms = self._select_active_glossary(text)
+
+        if self.prompt_style == "hunyuan_mt":
+            parts = []
+            if glossary_terms:
+                term_lines = "\n".join(f"{k} 翻译成 {v}" for k, v in glossary_terms.items())
+                parts.append(f"参考下面的翻译：\n{term_lines}\n")
+            parts.append(f"将以下文本翻译为 越南语，注意只需要输出翻译后的结果，不要额外解释：\n\n{text}")
+            return "\n".join(parts)
+
+        # translategemma
+        lang_names = {"zh": ("Chinese", "zh"), "en": ("English", "en"),
+                      "ja": ("Japanese", "ja"), "ko": ("Korean", "ko")}
+        src_name, src_code = lang_names.get(source_lang, ("Chinese", "zh"))
+        prompt = (
+            f"You are a professional {src_name} ({src_code}) to Vietnamese (vi) translator. "
+            f"Your goal is to accurately convey the meaning and nuances of the original {src_name} text "
+            f"while adhering to Vietnamese grammar, vocabulary, and cultural sensitivities.\n"
+        )
+        if glossary_terms:
+            term_lines = "; ".join(f"{k} -> {v}" for k, v in glossary_terms.items())
+            prompt += f"Use these exact translations for specific terms: {term_lines}.\n"
+        prompt += (
+            f"Produce only the Vietnamese translation, without any additional explanations or commentary. "
+            f"Please translate the following {src_name} text into Vietnamese:\n\n\n{text}"
+        )
+        return prompt
+
+    def build_system_prompt(self, source_lang: str, is_title: bool = False, chunk_text: Optional[str] = None) -> str:
         """
         Xây dựng prompt chỉ dẫn dịch thuật động theo ngôn ngữ gốc.
         """
@@ -126,20 +214,109 @@ class OllamaTranslator(TranslatorEngine):
         }
         lang_name = lang_map.get(source_lang, "Chinese")
         
+        genre_instructions = {
+            "tien_hiep": (
+                "You are translating a Wuxia/Cultivation (Tiên Hiệp/Huyền Huyễn) novel. "
+                "Use appropriate historical/ancient Vietnamese wuxia pronouns (such as 'ta' and 'ngươi' for dialogues, "
+                "'hắn', 'nàng' for pronouns, and respect honorifics like 'sư phụ', 'sư huynh'). "
+                "However, adapt pronouns flexibly depending on character age, era, and status differences (e.g. modern transmigrators might use tôi/cậu, while ancient ancestors use ta/ngươi/bản tọa). "
+                "Translate cultivation stages, locations, and magical items using standard Sino-Vietnamese (Hán Việt) naming style."
+            ),
+            "do_thi": (
+                "You are translating a Modern/Urban (Đô Thị/Hiện Đại) novel. "
+                "Use modern Vietnamese pronouns (such as 'tôi', 'cậu', 'anh', 'em', 'hắn') suitable for contemporary dialogue. "
+                "Translate internet slang and modern jargon naturally into smooth Vietnamese."
+            ),
+            "khoa_huyen": (
+                "You are translating a Sci-Fi/Apocalyptic/Game (Khoa Huyễn/Mạt Thế/Vô Hạn Lưu) novel. "
+                "Translate game system messages, stats, attributes, and sci-fi terms accurately and consistently. "
+                "Use natural, engaging Vietnamese appropriate for action and survival stories."
+            ),
+            "generic": (
+                "Translate the text into natural, smooth, and high-quality Vietnamese suitable for a web novel."
+            )
+        }
+        genre_text = genre_instructions.get(getattr(self, "genre", "tien_hiep"), genre_instructions["tien_hiep"])
+
         system_instruction = (
             f"You are an expert translator specializing in translating {lang_name} web novels to Vietnamese.\n"
             f"Translate the user's {lang_name} text to Vietnamese.\n"
+            f"Context: {genre_text}\n\n"
             "Requirements:\n"
-            "1. Translate into natural, smooth, and high-quality Vietnamese (novel style).\n"
+            "1. Translate into natural, smooth, and high-quality Vietnamese.\n"
             "2. Keep the original Markdown formatting (headings, blank lines) exactly as-is.\n"
-            f"3. Translate names consistently (e.g. for Chinese names like 江思 to Giang Tư, 冰糖 to Băng Đường).\n"
-            f"4. DO NOT leak or write any original non-Vietnamese characters in your output. Every sentence must be translated into Vietnamese.\n"
+            "3. Translate names consistently and accurately according to standard Sino-Vietnamese (Hán Việt) transliteration or the provided Glossary.\n"
+            "4. DO NOT leak or write any original non-Vietnamese characters in your output. Every sentence must be translated into Vietnamese.\n"
             "5. Output ONLY the translated Vietnamese text. Do not add comments, notes, or explanations.\n"
-            f"6. If the input contains short questions, dialogues, or specific terms (e.g. '“对抗？”'), translate them fully into Vietnamese (e.g. '“Đối kháng?”') and do not write or copy any original {lang_name} characters in your output."
+            "6. If the input contains short questions, dialogues, or specific terms, translate them fully into Vietnamese and do not write or copy any original characters in your output.\n"
+            "7. Translate Pinyin or untranslated Chinese terms into their Sino-Vietnamese (Hán Việt) equivalent or clear Vietnamese meaning (do not output raw Pinyin like 'Hu Ling Zhi').\n"
+            "8. Translate common idioms and metaphors into their natural Vietnamese equivalent (e.g. translate '扮猪吃老虎' to 'giả heo ăn hổ', '名义上的' to 'trên danh nghĩa', and '钉子户' to 'kẻ bám trụ lì lợm').\n"
+            "9. Avoid modern/slang terms in historical settings, and avoid overly ancient terms in modern settings."
         )
+
+        active_glossary = self._select_active_glossary(chunk_text)
+
+        if active_glossary:
+            glossary_text = "\n".join([f"- {k} -> {v}" for k, v in active_glossary.items()])
+            system_instruction += (
+                f"\n\nCRITICAL REQUIREMENT: You MUST strictly use the following Glossary for specific terms and names. "
+                f"Do not invent or use other translations for these terms:\n{glossary_text}\n"
+            )
+
         if is_title:
             system_instruction += "\nNote: This is the chapter title. Keep it short and preserve Markdown heading prefix."
         return system_instruction
+
+    def extract_glossary_from_text(self, text: str, current_glossary: dict) -> dict:
+        """
+        Trích xuất các danh từ riêng MỚI từ văn bản bằng Ollama.
+        """
+        prompt = (
+            "Dưới đây là một đoạn truyện chữ (tiên hiệp/đô thị/mạng) tiếng Trung.\n"
+            "Nhiệm vụ của bạn là phân tích và lập bảng thuật ngữ dịch thuật (glossary) chuẩn xác nhất để làm dữ liệu dịch sang tiếng Việt.\n"
+            "Yêu cầu trích xuất cụ thể:\n"
+            "1. Tên nhân vật (Ví dụ: 顾安 -> Cố An, 张春秋 -> Trương Xuân Thu, 姬少玉 -> Cơ Thiếu Ngọc / Cơ Tiêu Ngọc). Đảm bảo xưng hô phù hợp với ngữ cảnh (Ví dụ: 顾安兄弟 -> Huynh đệ Cố An, KHÔNG dịch thành Cố An tỷ đệ).\n"
+            "2. Tên địa danh, phòng đường, thung lũng (Ví dụ: 药谷 -> Dược Cốc, 丹药堂 -> Đan Dược Đường, 沧州 -> Thương Châu, 太玄门 -> Thái Huyền Môn). Tránh dịch sang nghĩa thuần Việt sai lệch (Ví dụ: KHÔNG dịch 药谷 thành thung lũng thuốc / dược giá / thuốc thung).\n"
+            "3. Thuật ngữ tu tiên, cảnh giới, công pháp, thảo dược (Ví dụ: 筑基 -> Trúc Cơ, 修为 -> Tu vi, 不入流 -> Bất nhập lưu, 一阶 -> Nhất giai, 夺取寿命 -> Đoạt lấy tuổi thọ, 春木功 -> Xuân Mộc Công, 赤灵花 -> Xích Linh Hoa). Tránh dịch sai lệch bản chất tu tiên (Ví dụ: KHÔNG dịch 修为 thành thiên tài, KHÔNG dịch 不入流 thành không đạt tiêu chuẩn, KHÔNG dịch 赤灵花 thành Hồng Linh Hoa).\n"
+            "4. Từ lóng mạng và thuật ngữ cốt lõi (Ví dụ: 金手指 -> Ngón tay vàng / Hệ thống hack, KHÔNG dịch thành kim chỉ tay).\n"
+        )
+        if current_glossary:
+            existing_keys = ", ".join(current_glossary.keys())
+            prompt += f"\nBỎ QUA và KHÔNG trích xuất lại các từ đã có trong danh sách từ điển hiện tại sau: {existing_keys}.\n"
+        
+        prompt += (
+            "\nTRẢ VỀ DUY NHẤT một chuỗi JSON hợp lệ (không chứa markdown block ```json, chỉ có ngoặc nhọn). "
+            "Định dạng JSON: {\"Chữ Hán\": \"Bản dịch Hán Việt hoặc Nghĩa chuẩn tương ứng\"}.\n"
+            "Nếu không có từ mới nào đáng chú ý, hãy trả về JSON rỗng: {}\n\n"
+            "Đoạn truyện cần trích xuất:\n"
+            f"{text[:1500]}"  # Chỉ trích từ ~1500 ký tự đầu mỗi chương
+        )
+        
+        for attempt in range(2):
+            try:
+                res_text = self.call_ollama_api(
+                    text=prompt,
+                    system_instruction="You are a JSON data extractor. Output raw JSON only.",
+                    response_json=True
+                )
+                # Dọn dẹp JSON một cách robust
+                res_text = res_text.strip()
+                start_idx = res_text.find('{')
+                end_idx = res_text.rfind('}')
+                if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                    res_text = res_text[start_idx:end_idx+1]
+                
+                data = json.loads(res_text)
+                if isinstance(data, dict):
+                    cleaned_data = {}
+                    for k, v in data.items():
+                        if k and v and isinstance(k, str) and isinstance(v, str):
+                            cleaned_data[k.strip()] = v.strip()
+                    return cleaned_data
+            except Exception as e:
+                print(f"[Warning] Lỗi khi extract glossary (Ollama) lần thử {attempt+1}: {e}")
+                
+        return {}
 
     def call_ollama_api(
         self,
@@ -153,24 +330,68 @@ class OllamaTranslator(TranslatorEngine):
         """
         Gọi API Ollama Chat để dịch văn bản với cơ chế thử lại nếu lỗi kết nối/timeout.
         """
-        if system_instruction is None:
-            system_instruction = self.build_system_prompt(source_lang, is_title)
-
         num_predict = override_num_predict if override_num_predict is not None else self.num_predict
+
+        # Model chuyên dịch (MT): 1 message user duy nhất theo template cố định của model.
+        # Các lời gọi đặc biệt (extraction JSON, system_instruction tùy biến) vẫn đi đường chat.
+        use_mt_style = (
+            self.prompt_style in ("hunyuan_mt", "translategemma")
+            and system_instruction is None
+            and not response_json
+        )
+
+        if use_mt_style:
+            messages = [{"role": "user", "content": self._build_mt_prompt(text, source_lang)}]
+        else:
+            if system_instruction is None:
+                system_instruction = self.build_system_prompt(source_lang, is_title, text)
+
+            messages = [
+                {"role": "system", "content": system_instruction}
+            ]
+
+        if not use_mt_style and self.few_shot and not response_json:
+            # Sử dụng few-shot chat phù hợp thể loại giúp model tuân thủ cấu trúc dịch thuật và xưng hô
+            few_shots = {
+                "tien_hiep": [
+                    {"role": "user", "content": "第十章 默默修炼\n顾安越过木栏，进入药园开始新一天的耕作。\n“听说了吗？大姐头姬少玉 today 筑基成功了！”"},
+                    {"role": "assistant", "content": "Chương 10: Âm thầm tu luyện\nCố An vượt qua hàng rào gỗ, đi vào dược viên bắt đầu một ngày trồng trọt mới.\n“Nghe nói gì chưa? Đại tỷ đầu Cơ Thiếu Ngọc hôm nay đã Trúc Cơ thành công rồi!”"}
+                ],
+                "do_thi": [
+                    {"role": "user", "content": "第十章 意外遭遇\n顾安越过木栏，对小伙子说：“今天别做钉子户了。”\n“名义上的师父不靠谱，我们走！”"},
+                    {"role": "assistant", "content": "Chương 10: Cuộc gặp gỡ bất ngờ\nCố An vượt qua hàng rào gỗ, nói với chàng trai trẻ: “Hôm nay đừng làm kẻ bám trụ lì lợm nữa.”\n“Người sư phụ trên danh nghĩa kia không đáng tin cậy đâu, chúng ta đi!”"}
+                ],
+                "khoa_huyen": [
+                    {"role": "user", "content": "【系统提示：您已成功越过木栏。】\n顾安对小伙子说：“小心前面的变异老鼠。”\n“我们走！”"},
+                    {"role": "assistant", "content": "【Hệ thống nhắc nhở: Bạn đã vượt qua hàng rào gỗ thành công.】\nCố An nói với chàng trai trẻ: “Cẩn thận con chuột biến dị phía trước.”\n“Chúng ta đi!”"}
+                ],
+                "generic": [
+                    {"role": "user", "content": "第十章 默默耕耘\n顾安越过木栏，进入田野开始新 energetic 的工作。"},
+                    {"role": "assistant", "content": "Chương 10: Âm thầm trồng trọt\nCố An vượt qua hàng rào gỗ, bước vào cánh đồng bắt đầu một ngày làm việc đầy năng lượng."}
+                ]
+            }
+            active_few_shot = few_shots.get(getattr(self, "genre", "tien_hiep"), few_shots["tien_hiep"])
+            messages.extend(active_few_shot)
+
+        if not use_mt_style:
+            messages.append({"role": "user", "content": text})
+
+        options = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "num_ctx": self.num_ctx,
+            "num_predict": num_predict
+        }
+        if self.top_k is not None:
+            options["top_k"] = self.top_k
+        if self.repeat_penalty is not None:
+            options["repeat_penalty"] = self.repeat_penalty
 
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": text}
-            ],
+            "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": self.temperature,
-                "top_p": 0.9,
-                "num_ctx": self.num_ctx,
-                "num_predict": num_predict
-            }
+            "options": options
         }
         if response_json:
             payload["format"] = "json"
@@ -186,14 +407,14 @@ class OllamaTranslator(TranslatorEngine):
         
         for attempt in range(max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=90) as response:
+                with urllib.request.urlopen(req, timeout=600) as response:
                     res_data = json.loads(response.read().decode("utf-8"))
                     self.last_done_reason = res_data.get("done_reason")
                     return res_data.get("message", {}).get("content", "").strip()
             except Exception as e:
                 if attempt < max_retries:
                     wait_time = backoff_seconds[attempt]
-                    print(f"[WARN] Lỗi kết nối/timeout tới Ollama ({e}). Đang thử lại sau {wait_time}s...")
+                    print(f"[WARN] Loi ket noi/timeout toi Ollama ({e}). Dang thu lai sau {wait_time}s...")
                     time.sleep(wait_time)
                     continue
                 raise e
@@ -305,7 +526,15 @@ class OllamaTranslator(TranslatorEngine):
             translated_chunk = translated_chunks[i - 1]
             orig_paras = [p.strip() for p in chunk.split("\n\n") if p.strip()]
             trans_paras = [p.strip() for p in translated_chunk.split("\n\n") if p.strip()]
-            
+
+            if len(orig_paras) != len(trans_paras):
+                # Model chuyên dịch (MT) thường trả về mỗi đoạn trên MỘT dòng,
+                # làm mất dòng trống giữa các đoạn. Thử căn chỉnh lại theo dòng đơn
+                # trước khi bỏ cuộc: nếu số DÒNG khớp số đoạn gốc thì ghép 1-1.
+                trans_lines = [l.strip() for l in translated_chunk.split("\n") if l.strip()]
+                if len(trans_lines) == len(orig_paras):
+                    trans_paras = trans_lines
+
             if len(orig_paras) == len(trans_paras):
                 for op, tp in zip(orig_paras, trans_paras):
                     paragraph_mappings.append((op, tp, i))
@@ -393,7 +622,8 @@ class OllamaTranslator(TranslatorEngine):
                     "chunk_index": chunk_index,
                     "char_position_start": para_start_pos,
                     "reason": p_reason if p_reason else "leak sau cả 2 lớp",
-                    "original_text_preview": orig_p[:60]
+                    "original_text_preview": orig_p[:60],
+                    "original_text": orig_p
                 })
 
             if p_status == "direct_success":
@@ -427,6 +657,59 @@ class OllamaTranslator(TranslatorEngine):
         final_output.append(translated_body)
         return "\n\n".join(final_output)
 
+    def _translate_single_paragraph(self, text: str, source_lang: str = "zh") -> str:
+        """Dịch MỘT đoạn văn đơn lẻ bằng API trực tiếp — KHÔNG qua pipeline chunking/tầng 2.
+
+        Override base class: base gọi self.translate() (toàn bộ file pipeline)
+        sinh thêm MISSING_CHUNK mới. Ở đây chỉ gọi call_ollama_api 1 lần.
+        Thử tối đa 3 lần ở các nhiệt độ khác nhau.
+        """
+        # Với đoạn rất ngắn (< 100 ký tự), model chat hay "nhại lại" input.
+        # Bọc trong instruction rõ ràng hơn để ép dịch (chỉ với style chat;
+        # style MT đã có template ép dịch riêng nên dùng thẳng văn bản gốc).
+        if self.prompt_style == "chat" and len(text) < 100:
+            wrapped = (
+                f"Translate the following single Chinese sentence to Vietnamese. "
+                f"Output ONLY the Vietnamese translation, nothing else:\n\n{text}"
+            )
+        else:
+            wrapped = text
+
+        attempts = [
+            {"temp": 0.05, "token_mult": 1.0},
+            {"temp": 0.02, "token_mult": 1.5},
+            {"temp": 0.01, "token_mult": 2.0},
+        ]
+        last_result = ""
+        for att in attempts:
+            original_temp = self.temperature
+            self.temperature = att["temp"]
+            try:
+                override_predict = int(self.num_predict * att["token_mult"]) if att["token_mult"] > 1.0 else None
+                result = self.call_ollama_api(
+                    wrapped, source_lang=source_lang,
+                    override_num_predict=override_predict
+                )
+                if result and result.strip() and not self.has_chinese_leak(result):
+                    return result.strip()
+                last_result = result
+            except Exception:
+                pass
+            finally:
+                self.temperature = original_temp
+
+        # Nới lỏng: nếu kết quả cuối cùng không hoàn toàn sạch nhưng ít leak
+        # (ít hơn 5 ký tự Hán) thì vẫn chấp nhận — tốt hơn [[MISSING_CHUNK]]
+        if last_result and last_result.strip():
+            chinese_count = len(self.chinese_char_pattern.findall(last_result))
+            if chinese_count <= 5:
+                return last_result.strip()
+
+        # Nếu tất cả attempts đều thất bại, trả về kết quả cuối cùng (dù có leak)
+        # để repair logic quyết định giữ marker hay chấp nhận
+        return last_result.strip() if last_result else ""
+
+
     def translate_file(self, input_path: str, output_path: str, progress_callback: Optional[Callable[[str], None]] = None, source_lang: str = "zh") -> None:
         """
         Đọc một file, dịch nội dung và ghi ra file đích.
@@ -443,6 +726,9 @@ class OllamaTranslator(TranslatorEngine):
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(translated_text)
 
+        # Cập nhật vị trí chính xác (ký tự + số dòng) của các đoạn lỗi trong file output
+        self.refresh_failed_positions(translated_text)
+
         # Write .translation_report.json alongside the output file
         import datetime
         report = {
@@ -456,9 +742,10 @@ class OllamaTranslator(TranslatorEngine):
             "failed_chunks": self.last_report.get("failed_chunks", []),
             "translated_at": datetime.datetime.now().isoformat()
         }
-        
+
         input_base = os.path.splitext(os.path.basename(input_path))[0]
         report_path = os.path.join(os.path.dirname(output_path), f"{input_base}.translation_report.json")
+        self.last_report_path = report_path
         with open(report_path, "w", encoding="utf-8") as rf:
             json.dump(report, rf, ensure_ascii=False, indent=2)
 
