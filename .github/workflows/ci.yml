@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  kiem-tra-cu-phap:
+    name: Kiem tra cu phap Python (khong can mang/cookie)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lay ma nguon (bo qua submodule Gemini-API)
+        uses: actions/checkout@v4
+
+      - name: Cai Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bien dich kiem tra cu phap
+        run: |
+          python -m compileall core translator sources web -q
+          python -m py_compile adapter_cli.py main.py app.py
