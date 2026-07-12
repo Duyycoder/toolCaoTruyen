@@ -289,28 +289,33 @@ class OllamaTranslator(TranslatorEngine):
             "Định dạng JSON: {\"Chữ Hán\": \"Bản dịch Hán Việt hoặc Nghĩa chuẩn tương ứng\"}.\n"
             "Nếu không có từ mới nào đáng chú ý, hãy trả về JSON rỗng: {}\n\n"
             "Đoạn truyện cần trích xuất:\n"
-            f"{text[:800]}"  # 800 ký tự để prompt vừa num_ctx 2048; tên riêng thường ở đầu chương
+            f"{text[:1500]}"  # Chỉ trích từ ~1500 ký tự đầu mỗi chương
         )
         
-        try:
-            res_text = self.call_ollama_api(
-                text=prompt,
-                system_instruction="You are a JSON data extractor. Output raw JSON only.",
-                response_json=True
-            )
-            # Dọn dẹp JSON
-            res_text = res_text.strip()
-            if res_text.startswith("```json"): res_text = res_text[7:]
-            if res_text.startswith("```"): res_text = res_text[3:]
-            if res_text.endswith("```"): res_text = res_text[:-3]
-            res_text = res_text.strip()
-            
-            data = json.loads(res_text)
-            if isinstance(data, dict):
-                return data
-        except Exception as e:
-            print(f"[Warning] Lỗi khi extract glossary (Ollama): {e}")
-            
+        for attempt in range(2):
+            try:
+                res_text = self.call_ollama_api(
+                    text=prompt,
+                    system_instruction="You are a JSON data extractor. Output raw JSON only.",
+                    response_json=True
+                )
+                # Dọn dẹp JSON một cách robust
+                res_text = res_text.strip()
+                start_idx = res_text.find('{')
+                end_idx = res_text.rfind('}')
+                if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                    res_text = res_text[start_idx:end_idx+1]
+                
+                data = json.loads(res_text)
+                if isinstance(data, dict):
+                    cleaned_data = {}
+                    for k, v in data.items():
+                        if k and v and isinstance(k, str) and isinstance(v, str):
+                            cleaned_data[k.strip()] = v.strip()
+                    return cleaned_data
+            except Exception as e:
+                print(f"[Warning] Lỗi khi extract glossary (Ollama) lần thử {attempt+1}: {e}")
+                
         return {}
 
     def call_ollama_api(
