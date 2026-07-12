@@ -82,6 +82,8 @@ def handle_translate(args):
         leak_threshold = args.leak_threshold
         genre = args.genre
         auto_extract_glossary = args.auto_extract
+        glossary_extract_engine = args.glossary_extract_engine
+        glossary_extract_ollama_model = args.glossary_extract_ollama_model
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -143,22 +145,8 @@ def handle_translate(args):
         glossary_mgr.load_story_glossary(input_dir)
         combined_glossary = glossary_mgr.get_combined_glossary()
 
-        gemini_extractor = None
-        if engine_type == "gemini_api":
-            gemini_extractor = TRANSLATOR_ENGINES["gemini_api"](
-                api_key=gemini_offline_key,
-                base_url=gemini_offline_base_url,
-                model=gemini_offline_model,
-                leak_threshold_percent=leak_threshold
-            )
-        # Engine ollama chạy offline hoàn toàn: trích xuất từ điển cũng dùng chính
-        # Ollama (translator), không tạo extractor Gemini dù có API key trong config
-        elif engine_type != "ollama" and gemini_api_key and gemini_api_key.strip():
-            gemini_extractor = TRANSLATOR_ENGINES["gemini"](
-                api_key=gemini_api_key,
-                model=gemini_model,
-                leak_threshold_percent=leak_threshold
-            )
+        # Khởi tạo Engine tương ứng
+        from translator import TRANSLATOR_ENGINES, OLLAMA_MODELS
 
         if engine_type == "ollama":
             chunk_size = OLLAMA_MODELS.get(ollama_model, {}).get("chunk_size_chars", 350)
@@ -168,14 +156,11 @@ def handle_translate(args):
                 leak_threshold_percent=leak_threshold
             )
         elif engine_type == "gemini":
-            if gemini_extractor:
-                translator = gemini_extractor
-            else:
-                translator = TRANSLATOR_ENGINES["gemini"](
-                    api_key=gemini_api_key,
-                    model=gemini_model,
-                    leak_threshold_percent=leak_threshold
-                )
+            translator = TRANSLATOR_ENGINES["gemini"](
+                api_key=gemini_api_key,
+                model=gemini_model,
+                leak_threshold_percent=leak_threshold
+            )
         elif engine_type == "gemini_api":
             translator = TRANSLATOR_ENGINES["gemini_api"](
                 api_key=gemini_offline_key,
@@ -186,9 +171,55 @@ def handle_translate(args):
         else:
             raise ValueError(f"Invalid engine type: {engine_type}")
 
+        # Khởi tạo glossary_extractor độc lập dựa trên cấu hình chọn mô hình trích xuất
+        glossary_extractor = None
+        if auto_extract_glossary:
+            if glossary_extract_engine == "same_as_trans":
+                glossary_extractor = translator
+            elif glossary_extract_engine == "gemini":
+                if engine_type == "gemini":
+                    glossary_extractor = translator
+                elif gemini_api_key and gemini_api_key.strip():
+                    try:
+                        glossary_extractor = TRANSLATOR_ENGINES["gemini"](
+                            api_key=gemini_api_key,
+                            model=gemini_model,
+                            leak_threshold_percent=leak_threshold
+                        )
+                    except Exception as e:
+                        print(f"[WARN] Không thể khởi tạo gemini_extractor độc lập: {e}")
+            elif glossary_extract_engine == "ollama":
+                model_to_use = glossary_extract_ollama_model or ollama_model
+                if engine_type == "ollama" and model_to_use == ollama_model:
+                    glossary_extractor = translator
+                else:
+                    try:
+                        chunk_size = OLLAMA_MODELS.get(model_to_use, {}).get("chunk_size_chars", 350)
+                        glossary_extractor = TRANSLATOR_ENGINES["ollama"](
+                            model=model_to_use,
+                            max_chunk_chars=chunk_size,
+                            leak_threshold_percent=leak_threshold
+                        )
+                    except Exception as e:
+                        print(f"[WARN] Không thể khởi tạo Ollama extractor độc lập cho '{model_to_use}': {e}")
+            elif glossary_extract_engine == "gemini_api":
+                if engine_type == "gemini_api":
+                    glossary_extractor = translator
+                else:
+                    try:
+                        glossary_extractor = TRANSLATOR_ENGINES["gemini_api"](
+                            api_key=gemini_offline_key,
+                            base_url=gemini_offline_base_url,
+                            model=gemini_offline_model,
+                            leak_threshold_percent=leak_threshold
+                        )
+                    except Exception as e:
+                        print(f"[WARN] Không thể khởi tạo gemini_offline_extractor độc lập: {e}")
+
+        # Cấu hình Genre cho các translator/extractor
         translator.set_genre(genre)
-        if gemini_extractor:
-            gemini_extractor.set_genre(genre)
+        if glossary_extractor:
+            glossary_extractor.set_genre(genre)
 
         # Load idioms
         common_idioms_path = os.path.join(".", "common_idioms.json")
@@ -196,24 +227,24 @@ def handle_translate(args):
             with open(common_idioms_path, 'r', encoding='utf-8') as f:
                 idioms = json.load(f)
                 translator.set_common_idioms(idioms)
-                if gemini_extractor:
-                    gemini_extractor.set_common_idioms(idioms)
+                if glossary_extractor:
+                    glossary_extractor.set_common_idioms(idioms)
 
         translator.set_glossary(combined_glossary)
 
         # Model chuyên dịch (MT) không làm được trích xuất JSON -> bỏ qua auto-extract;
         # glossary có sẵn (global + story) vẫn được áp dụng qua template thuật ngữ
         translator_prompt_style = getattr(translator, "prompt_style", "chat")
-        if auto_extract_glossary and gemini_extractor is None and translator_prompt_style != "chat":
+        if auto_extract_glossary and glossary_extractor is None and translator_prompt_style != "chat":
             auto_extract_glossary = False
             log_json("file_log", {
                 "message": f"Model chuyên dịch ({translator_prompt_style}) không hỗ trợ trích xuất từ điển tự động — bỏ qua bước trích xuất. Glossary có sẵn vẫn được áp dụng khi dịch."
             })
 
         if auto_extract_glossary:
-            extract_engine_name = engine_type if gemini_extractor is None else (
-                "gemini_api" if engine_type == "gemini_api" else "gemini"
-            )
+            extract_engine_name = glossary_extract_engine
+            if extract_engine_name == "same_as_trans":
+                extract_engine_name = engine_type
             log_json("file_log", {"message": f"Trích xuất từ điển tự động chạy bằng engine: {extract_engine_name}"})
 
         # Translation execution loop
@@ -253,7 +284,7 @@ def handle_translate(args):
                     with open(file_path, "r", encoding="utf-8") as f:
                         text_content = f.read()
                     if text_content.strip():
-                        extractor = gemini_extractor if (gemini_extractor and gemini_extractor.is_available()) else translator
+                        extractor = glossary_extractor if (glossary_extractor and glossary_extractor.is_available()) else translator
                         new_terms = extractor.extract_glossary_from_text(text_content, translator.glossary)
                         if new_terms:
                             added_story = glossary_mgr.save_story_glossary(new_terms)
@@ -385,6 +416,8 @@ def main():
     translate_parser.add_argument("--leak-threshold", type=int, default=10, help="Leak threshold percentage")
     translate_parser.add_argument("--genre", default="tien_hiep", help="Novel genre")
     translate_parser.add_argument("--auto-extract", action="store_true", default=True, help="Auto extract glossary")
+    translate_parser.add_argument("--glossary-extract-engine", default="gemini", choices=["gemini", "ollama", "gemini_api", "same_as_trans"], help="Glossary extraction engine")
+    translate_parser.add_argument("--glossary-extract-ollama-model", default="", help="Glossary extraction Ollama model name")
     translate_parser.set_defaults(func=handle_translate)
 
     args = parser.parse_args()
