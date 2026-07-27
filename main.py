@@ -11,7 +11,7 @@
 import os
 import re
 import sys
-from typing import Tuple
+from typing import Any, Optional, Tuple
 
 from sources.base import Color
 from sources.registry import SOURCES, get_source
@@ -363,7 +363,6 @@ def _search_and_select(source: str, base_url: str) -> Tuple[int, int]:
 
 def _display_search_results(results: list) -> Optional[Any]:
     """Hiển thị danh sách kết quả tìm kiếm và trả về truyện được chọn."""
-    from typing import Any
     print(f"\n{Color.CYAN}{'═' * 60}{Color.RESET}")
     print(f"{Color.BOLD}   📚  KẾT QUẢ TÌM KIẾM ({len(results)} truyện){Color.RESET}")
     print(f"{Color.CYAN}{'═' * 60}{Color.RESET}\n")
