@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 rem Set console page to standard US/English (OEM)
 chcp 437 >nul 2>&1
 title Cau hinh va Cai dat he thong Tool Cao Truyen
@@ -52,18 +52,16 @@ echo [OK] Da cai dat xong cac thu vien Python.
 echo.
 
 rem === 4. Kiem tra Google Chrome ===
+rem Chrome CHI can khi cao truyen tu web (bypass Cloudflare). Nguon "thu muc cuc bo"
+rem va "AI sang tac" khong dung den, nen thieu Chrome chi canh bao - KHONG dung setup.
 if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
     echo [OK] Da tim thay Google Chrome.
 ) else if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" (
     echo [OK] Da tim thay Google Chrome.
 ) else (
-    echo [ERROR] CHUA CAI GOOGLE CHROME!
-    echo.
-    echo     Trinh duyet Chrome la bat buoc de bypass Cloudflare khi cao truyen.
-    echo     Hay tai va cai dat tai: https://www.google.com/chrome/
-    echo.
-    pause
-    exit /b 1
+    echo [WARN] Chua cai Google Chrome.
+    echo        Van cai dat tiep duoc. Chi khi CAO TRUYEN TU WEB moi can Chrome.
+    echo        Neu can, tai tai: https://www.google.com/chrome/
 )
 echo.
 
@@ -76,7 +74,16 @@ echo [2] Gemini API - Dich Online toc do cao, can Gemini API Key
 echo [3] Gemini API (Offline/Local) - Dich qua cookies, tu dong chay server
 echo [4] Su dung tat ca cac option tren
 echo ------------------------------------------------------------
-set /p CHOICE="Nhap lua chon cua ban [1, 2, 3, 4] - Mac dinh la 4: "
+rem setup.bat cua repo tong dat NON_INTERACTIVE=1 roi goi file nay. Truoc day
+rem cac dong "set /p" duoi day van hoi, khien setup dung im cho go phim - nguoi
+rem dung tuong treo. Che do khong tuong tac -> lay mac dinh, khong hoi gi ca.
+if "%NON_INTERACTIVE%"=="1" (
+    echo [INFO] Che do cai dat tu dong - chon mac dinh [4] va bo qua nhap API Key.
+    echo        Dien Gemini API Key sau trong giao dien - muc Cau Hinh Chung.
+    set CHOICE=4
+) else (
+    set /p CHOICE="Nhap lua chon cua ban [1, 2, 3, 4] - Mac dinh la 4: "
+)
 
 if "%CHOICE%"=="" set CHOICE=4
 
@@ -87,7 +94,9 @@ goto :setup_ollama_only
 
 :setup_gemini_only
 echo.
-set /p GEMINI_KEY="Nhap Gemini API Key cua ban - Lay tai aistudio.google.com: "
+if not "%NON_INTERACTIVE%"=="1" (
+    set /p GEMINI_KEY="Nhap Gemini API Key cua ban - Lay tai aistudio.google.com: "
+)
 .venv\Scripts\python setup_helper.py gemini "%GEMINI_KEY%"
 if %errorlevel% neq 0 (
     echo [ERROR] Loi khi cap nhat cau hinh.
@@ -116,7 +125,9 @@ goto :setup_complete
 
 :setup_both
 echo.
-set /p GEMINI_KEY="Nhap Gemini API Key - Nhan Enter de bo qua hoac dien sau: "
+if not "%NON_INTERACTIVE%"=="1" (
+    set /p GEMINI_KEY="Nhap Gemini API Key - Nhan Enter de bo qua hoac dien sau: "
+)
 .venv\Scripts\python setup_helper.py ollama "%GEMINI_KEY%"
 if %errorlevel% neq 0 (
     echo [ERROR] Loi khi cap nhat cau hinh.
@@ -175,10 +186,11 @@ if exist "%OLLAMA_PATH%" (
     set "OLLAMA_CMD=%OLLAMA_PATH%"
     echo [OK] Cai dat Ollama thanh cong.
 ) else (
-    echo [ERROR] Cai dat that bai hoac khong tim thay Ollama tai: %OLLAMA_PATH%
-    echo     Vui long tai va cai dat thu cong tai: https://ollama.com
-    pause
-    exit /b 1
+    echo [WARN] Cai Ollama that bai hoac khong tim thay tai: %OLLAMA_PATH%
+    echo        Bo qua buoc tai model Ollama. Ung dung van chay duoc voi engine
+    echo        Gemini. Muon dung Ollama thi cai tay tai https://ollama.com
+    echo        roi mo lai ung dung - model se duoc tai tu dong.
+    goto :setup_complete
 )
 
 :ollama_found
@@ -209,9 +221,9 @@ if %errorlevel% neq 0 (
 
 "%OLLAMA_CMD%" list >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] Khong the ket noi voi Ollama server. Vui long mo ung dung Ollama bang tay.
-    pause
-    exit /b 1
+    echo [WARN] Chua ket noi duoc Ollama server - bo qua buoc tai model o day.
+    echo        Ung dung se tu khoi dong Ollama va tu tai model khi can dung.
+    goto :setup_complete
 )
 echo [OK] Da ket noi voi Ollama server.
 echo.
