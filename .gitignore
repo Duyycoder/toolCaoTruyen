@@ -27,3 +27,9 @@ Gemini-API/api_keys.json
 global_glossary.json
 
 global_glossary.json
+
+# Ket qua chay thu: ten chuong tieng Viet tao ra duong dan >200 ky tu, Windows
+# khong checkout duoc (Filename too long) -> clone tren may moi that bai.
+scratch/test_output_*/
+test_output/
+truyen_tai_ve/
