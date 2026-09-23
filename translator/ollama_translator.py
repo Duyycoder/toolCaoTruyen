@@ -462,7 +462,12 @@ class OllamaTranslator(TranslatorEngine):
         Dịch toàn bộ văn bản (bao gồm tiêu đề và thân bài) sử dụng cơ chế chunking 2 tầng.
         """
         if not self.is_available():
-            err_msg = f"Model {self.model} chưa được tải. Vui lòng chạy lệnh: `ollama pull {self.model}`"
+            if self.model.startswith("hy-mt2"):
+                # hy-mt2 là model tự tạo từ Modelfile, không pull trực tiếp được
+                err_msg = (f"Model {self.model} chưa được cài. Vui lòng chạy "
+                           f"`toolCaoTruyen\\ollama_models\\install_hy_mt2.bat` (tải ~2GB từ HuggingFace)")
+            else:
+                err_msg = f"Model {self.model} chưa được tải. Vui lòng chạy lệnh: `ollama pull {self.model}`"
             if progress_callback:
                 progress_callback(f"[ERROR] {err_msg}")
             raise ValueError(err_msg)
